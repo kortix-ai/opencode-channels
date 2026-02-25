@@ -6,6 +6,12 @@ Connect [OpenCode](https://github.com/anomalyco/opencode) to **Slack** as a chat
 Slack @mention --> Public URL --> Chat SDK Webhook --> OpenCode (SSE) --> Streamed Response --> Slack
 ```
 
+## Setup in Under 5 Minutes
+
+[![Setup Video](https://img.shields.io/badge/Watch-Setup_Video-red?style=for-the-badge&logo=youtube)](https://screen.studio/share/EkoOaqBz)
+
+> **[Watch the full setup walkthrough](https://screen.studio/share/EkoOaqBz)** — from `git clone` to a working Slack bot in under 5 minutes.
+
 ## Quick Start
 
 ```bash
