@@ -379,4 +379,95 @@ describe('SlackAdapter', () => {
       await expect(adapter.onChannelRemoved(config)).resolves.not.toThrow();
     });
   });
+
+  // ── Reaction lifecycle ────────────────────────────────────────────────
+
+  describe('reactComplete', () => {
+    it('adds white_check_mark reaction on success', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ ok: true }),
+      });
+      globalThis.fetch = fetchMock;
+
+      const adapter = createAdapter();
+      const config = createChannelConfig();
+      const message = createNormalizedMessage({
+        externalId: '1234.5678',
+        raw: { event: { channel: 'C_CHAN' } },
+      });
+
+      await adapter.reactComplete(config, message);
+
+      const reactionCall = fetchMock.mock.calls.find(
+        ([url]: [string]) => url.includes('reactions.add'),
+      );
+      expect(reactionCall).toBeDefined();
+      const body = JSON.parse(reactionCall![1].body);
+      expect(body.name).toBe('white_check_mark');
+      expect(body.channel).toBe('C_CHAN');
+      expect(body.timestamp).toBe('1234.5678');
+    });
+
+    it('does nothing without bot token', async () => {
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock;
+
+      const adapter = createAdapter();
+      const config = createChannelConfig({ credentials: {} });
+      const message = createNormalizedMessage();
+
+      await adapter.reactComplete(config, message);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reactError', () => {
+    it('adds x reaction on error', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ ok: true }),
+      });
+      globalThis.fetch = fetchMock;
+
+      const adapter = createAdapter();
+      const config = createChannelConfig();
+      const message = createNormalizedMessage({
+        externalId: '1234.5678',
+        raw: { event: { channel: 'C_CHAN' } },
+      });
+
+      await adapter.reactError(config, message);
+
+      const reactionCall = fetchMock.mock.calls.find(
+        ([url]: [string]) => url.includes('reactions.add'),
+      );
+      expect(reactionCall).toBeDefined();
+      const body = JSON.parse(reactionCall![1].body);
+      expect(body.name).toBe('x');
+    });
+  });
+
+  describe('reactFilesChanged', () => {
+    it('adds file_folder reaction when files change', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ ok: true }),
+      });
+      globalThis.fetch = fetchMock;
+
+      const adapter = createAdapter();
+      const config = createChannelConfig();
+      const message = createNormalizedMessage({
+        externalId: '1234.5678',
+        raw: { event: { channel: 'C_CHAN' } },
+      });
+
+      await adapter.reactFilesChanged(config, message);
+
+      const reactionCall = fetchMock.mock.calls.find(
+        ([url]: [string]) => url.includes('reactions.add'),
+      );
+      expect(reactionCall).toBeDefined();
+      const body = JSON.parse(reactionCall![1].body);
+      expect(body.name).toBe('file_folder');
+    });
+  });
 });

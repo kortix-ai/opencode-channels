@@ -72,6 +72,15 @@ export interface ChannelAdapter {
     config: ChannelConfig,
     message: NormalizedMessage,
   ): Promise<void>;
+
+  /** React to indicate processing completed successfully */
+  reactComplete?(config: ChannelConfig, message: NormalizedMessage): Promise<void>;
+
+  /** React to indicate processing failed */
+  reactError?(config: ChannelConfig, message: NormalizedMessage): Promise<void>;
+
+  /** React to indicate files were created or modified */
+  reactFilesChanged?(config: ChannelConfig, message: NormalizedMessage): Promise<void>;
 }
 
 // ─── ChannelEngine interface ────────────────────────────────────────────────
@@ -139,4 +148,8 @@ export abstract class BaseAdapter implements ChannelAdapter {
     _message: NormalizedMessage,
     _files: FileOutput[],
   ): Promise<void> {}
+
+  async reactComplete(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
+  async reactError(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
+  async reactFilesChanged(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
 }

@@ -170,6 +170,9 @@ export class SlackAdapter extends BaseAdapter {
   }
 
   private static PROGRESS_EMOJI = 'hourglass_flowing_sand';
+  private static COMPLETE_EMOJI = 'white_check_mark';
+  private static ERROR_EMOJI = 'x';
+  private static FILES_EMOJI = 'file_folder';
 
   override async sendTypingIndicator(
     channelConfig: ChannelConfig,
@@ -201,6 +204,54 @@ export class SlackAdapter extends BaseAdapter {
 
     const api = new SlackApi(botToken);
     await api.removeReaction(channel, message.externalId, SlackAdapter.PROGRESS_EMOJI);
+  }
+
+  override async reactComplete(
+    channelConfig: ChannelConfig,
+    message: NormalizedMessage,
+  ): Promise<void> {
+    const botToken = this.getBotToken(channelConfig);
+    if (!botToken) return;
+
+    const rawPayload = message.raw as Record<string, unknown> | undefined;
+    const event = rawPayload?.event as Record<string, unknown> | undefined;
+    const channel = event?.channel as string;
+    if (!channel) return;
+
+    const api = new SlackApi(botToken);
+    await api.addReaction(channel, message.externalId, SlackAdapter.COMPLETE_EMOJI);
+  }
+
+  override async reactError(
+    channelConfig: ChannelConfig,
+    message: NormalizedMessage,
+  ): Promise<void> {
+    const botToken = this.getBotToken(channelConfig);
+    if (!botToken) return;
+
+    const rawPayload = message.raw as Record<string, unknown> | undefined;
+    const event = rawPayload?.event as Record<string, unknown> | undefined;
+    const channel = event?.channel as string;
+    if (!channel) return;
+
+    const api = new SlackApi(botToken);
+    await api.addReaction(channel, message.externalId, SlackAdapter.ERROR_EMOJI);
+  }
+
+  override async reactFilesChanged(
+    channelConfig: ChannelConfig,
+    message: NormalizedMessage,
+  ): Promise<void> {
+    const botToken = this.getBotToken(channelConfig);
+    if (!botToken) return;
+
+    const rawPayload = message.raw as Record<string, unknown> | undefined;
+    const event = rawPayload?.event as Record<string, unknown> | undefined;
+    const channel = event?.channel as string;
+    if (!channel) return;
+
+    const api = new SlackApi(botToken);
+    await api.addReaction(channel, message.externalId, SlackAdapter.FILES_EMOJI);
   }
 
   override async onChannelRemoved(channelConfig: ChannelConfig): Promise<void> {
@@ -365,6 +416,11 @@ export class SlackAdapter extends BaseAdapter {
             continue;
           }
           fileBuffer = Buffer.from(await fileRes.arrayBuffer());
+        }
+
+        if (fileBuffer.length === 0) {
+          console.warn(`[SLACK] Skipping 0-byte file: ${file.name}`);
+          continue;
         }
 
         console.log(`[SLACK] Uploading file to Slack: ${file.name} (${fileBuffer.length} bytes)`);

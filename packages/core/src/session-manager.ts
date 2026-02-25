@@ -121,28 +121,25 @@ export class SessionManager {
 
     this.cache.set(key, { sessionId, lastUsedAt: Date.now() });
 
-    if (dbSession) {
-      // Update existing row
-      db.update(channelSessions)
-        .set({
+    // Upsert — handles race conditions where two concurrent requests
+    // resolve the same session key simultaneously.
+    db.insert(channelSessions)
+      .values({
+        id: dbSession?.id ?? crypto.randomUUID(),
+        configId: config.id,
+        sessionKey: key,
+        opencodeSessionId: sessionId,
+        createdAt: dbSession?.createdAt ?? now,
+        lastUsedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: channelSessions.sessionKey,
+        set: {
           opencodeSessionId: sessionId,
           lastUsedAt: now,
-        })
-        .where(eq(channelSessions.id, dbSession.id))
-        .run();
-    } else {
-      // Insert new row
-      db.insert(channelSessions)
-        .values({
-          id: crypto.randomUUID(),
-          configId: config.id,
-          sessionKey: key,
-          opencodeSessionId: sessionId,
-          createdAt: now,
-          lastUsedAt: now,
-        })
-        .run();
-    }
+        },
+      })
+      .run();
 
     return sessionId;
   }

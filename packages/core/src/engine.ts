@@ -227,6 +227,8 @@ export class ChannelEngineImpl implements ChannelEngine {
       await adapter.sendResponse(config, message, agentResponse);
 
       // ── 7. Download and send collected files ───────────────────────────
+      let hadFiles = false;
+
       if (collectedFiles.length > 0 && adapter.sendFiles) {
         for (const file of collectedFiles) {
           if (!file.content) {
@@ -240,6 +242,7 @@ export class ChannelEngineImpl implements ChannelEngine {
 
         const downloadedFiles = collectedFiles.filter((f) => f.content);
         if (downloadedFiles.length > 0) {
+          hadFiles = true;
           await adapter
             .sendFiles(config, message, downloadedFiles)
             .catch((err) => {
@@ -250,7 +253,7 @@ export class ChannelEngineImpl implements ChannelEngine {
 
       // ── 8. Check git-status for new output files ───────────────────────
       if (adapter.sendFiles) {
-        await this.sendNewFilesFromGitStatus(
+        const newFileCount = await this.sendNewFilesFromGitStatus(
           client,
           adapter,
           config,
@@ -258,9 +261,20 @@ export class ChannelEngineImpl implements ChannelEngine {
           collectedFiles,
           filesBefore,
         );
+        if (newFileCount > 0) hadFiles = true;
       }
 
-      // ── 9. Log outbound message ────────────────────────────────────────
+      // ── 9. React with status indicators ────────────────────────────────
+      // Completion checkmark
+      if (adapter.reactComplete) {
+        adapter.reactComplete(config, message).catch(() => {});
+      }
+      // File-change indicator
+      if (hadFiles && adapter.reactFilesChanged) {
+        adapter.reactFilesChanged(config, message).catch(() => {});
+      }
+
+      // ── 10. Log outbound message ───────────────────────────────────────
       await this.logMessage(
         config,
         message,
@@ -268,6 +282,12 @@ export class ChannelEngineImpl implements ChannelEngine {
         responseText,
         sessionId,
       );
+    } catch (err) {
+      // React with error if not already handled above
+      if (adapter.reactError) {
+        adapter.reactError(config, message).catch(() => {});
+      }
+      console.error('[CHANNELS] processInner failed:', err);
     } finally {
       removeTyping();
     }
@@ -434,10 +454,10 @@ export class ChannelEngineImpl implements ChannelEngine {
     message: NormalizedMessage,
     alreadyCollected: FileOutput[],
     filesBefore?: Set<string>,
-  ): Promise<void> {
+  ): Promise<number> {
     try {
       const modifiedFiles = await client.getModifiedFiles().catch(() => []);
-      if (modifiedFiles.length === 0) return;
+      if (modifiedFiles.length === 0) return 0;
 
       const alreadySent = new Set(alreadyCollected.map((f) => f.name));
       const newFiles: FileOutput[] = [];
@@ -466,8 +486,10 @@ export class ChannelEngineImpl implements ChannelEngine {
             console.error('[CHANNELS] File send to channel failed:', err);
           });
       }
+      return newFiles.length;
     } catch (err) {
       console.warn('[CHANNELS] Git-status file check failed:', err);
+      return 0;
     }
   }
 
