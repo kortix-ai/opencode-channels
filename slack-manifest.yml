@@ -28,11 +28,13 @@ features:
 
   slash_commands:
     - command: /oc
+      url: https://placeholder.example.com/api/webhooks/slack
       description: OpenCode commands
       usage_hint: "[help|models|agents|status|reset|<question>]"
       should_escape: false
 
     - command: /opencode
+      url: https://placeholder.example.com/api/webhooks/slack
       description: OpenCode commands
       usage_hint: "[help|models|agents|status|reset|<question>]"
       should_escape: false
