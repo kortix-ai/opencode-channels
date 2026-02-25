@@ -26,6 +26,9 @@ features:
     display_name: opencode
     always_online: true
 
+  app_home:
+    assistant_view_enabled: true
+
   slash_commands:
     - command: /oc
       url: https://placeholder.example.com/api/webhooks/slack
