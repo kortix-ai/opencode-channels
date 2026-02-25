@@ -74,3 +74,6 @@ export {
   updateChannelConfig,
   deleteChannelConfig,
 } from './plugin.js';
+
+// ─── OpenCode Plugin ────────────────────────────────────────────────────────
+export { OpenCodeChannelsPlugin, stopChannelsPlugin } from './opencode-plugin.js';

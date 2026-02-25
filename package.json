@@ -8,11 +8,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --build --noEmit",
-    "clean": "pnpm -r clean"
+    "clean": "pnpm -r clean",
+    "e2e:slack": "tsx scripts/e2e-slack.ts",
+    "e2e:test": "tsx scripts/e2e-test.ts",
+    "setup": "bash scripts/setup-e2e.sh"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.2.1",
+    "tsx": "^4.19.0",
     "@types/node": "^22.0.0",
     "@types/better-sqlite3": "^7.6.8"
   }
