@@ -189,17 +189,26 @@ function checkPrerequisites(): boolean {
 
 // ─── Tunnel detection ───────────────────────────────────────────────────────
 
-async function detectNgrokUrl(): Promise<string | null> {
+async function detectNgrokUrl(): Promise<{ url: string; forwardPort: number | null } | null> {
   try {
     const res = await fetch('http://127.0.0.1:4040/api/tunnels', {
       signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as {
-      tunnels: Array<{ public_url: string; proto: string }>;
+      tunnels: Array<{ public_url: string; proto: string; config?: { addr?: string } }>;
     };
     const httpsTunnel = data.tunnels.find((t) => t.proto === 'https');
-    return httpsTunnel?.public_url ?? data.tunnels[0]?.public_url ?? null;
+    const tunnel = httpsTunnel ?? data.tunnels[0];
+    if (!tunnel) return null;
+
+    // Extract forwarding port from config.addr (e.g. "http://localhost:3456" → 3456)
+    let forwardPort: number | null = null;
+    if (tunnel.config?.addr) {
+      const portMatch = tunnel.config.addr.match(/:(\d+)$/);
+      if (portMatch) forwardPort = Number(portMatch[1]);
+    }
+    return { url: tunnel.public_url, forwardPort };
   } catch {
     return null;
   }
@@ -232,8 +241,12 @@ async function setupTunnel(port: number): Promise<string> {
   info('Looking for ngrok tunnel...');
   const existing = await detectNgrokUrl();
   if (existing) {
-    ok(`Found ngrok tunnel: ${existing}`);
-    return existing;
+    ok(`Found ngrok tunnel: ${existing.url}`);
+    if (existing.forwardPort && existing.forwardPort !== port) {
+      warn(`ngrok is forwarding to port ${existing.forwardPort}, but bot will listen on port ${port}.`);
+      warn(`You'll get 502 errors. Fix: restart ngrok with "ngrok http ${port}" or use --port ${existing.forwardPort}`);
+    }
+    return existing.url;
   }
 
   warn('No ngrok tunnel detected.');
@@ -253,10 +266,10 @@ async function setupTunnel(port: number): Promise<string> {
 
       for (let i = 0; i < 15; i++) {
         await new Promise((r) => setTimeout(r, 1000));
-        const url = await detectNgrokUrl();
-        if (url) {
-          ok(`ngrok started: ${url}`);
-          return url;
+        const result = await detectNgrokUrl();
+        if (result) {
+          ok(`ngrok started: ${result.url}`);
+          return result.url;
         }
       }
       fail('ngrok started but tunnel URL not detected after 15s.');
@@ -305,7 +318,8 @@ function generateManifest(webhookUrl: string, botName: string): string {
     oauth_config: {
       scopes: {
         bot: [
-          'app_mentions:read', 'channels:history', 'channels:read',
+          'app_mentions:read', 'assistant:write',
+          'channels:history', 'channels:read',
           'chat:write', 'chat:write.public', 'commands',
           'files:read', 'files:write',
           'groups:history', 'groups:read',
@@ -393,6 +407,18 @@ async function updateSlackManifest(baseUrl: string): Promise<boolean> {
   ];
   if (!features.bot_user) features.bot_user = { display_name: 'OpenCode', always_online: true };
   manifest.features = features;
+
+  // Ensure assistant:write scope is present (for assistant.threads.setStatus)
+  const oauth = (manifest.oauth_config || {}) as Record<string, unknown>;
+  const scopes = (oauth.scopes || {}) as Record<string, unknown>;
+  const botScopes = (scopes.bot || []) as string[];
+  if (!botScopes.includes('assistant:write')) {
+    botScopes.push('assistant:write');
+    scopes.bot = botScopes;
+    oauth.scopes = scopes;
+    manifest.oauth_config = oauth;
+    info('Added assistant:write scope (you may need to reinstall the app)');
+  }
 
   info(`Setting webhook URL: ${webhookUrl}`);
   const updateRes = await fetch(`${SLACK_API}/apps.manifest.update`, {
@@ -644,14 +670,28 @@ async function main(): Promise<void> {
     setEnvVar('SLACK_SIGNING_SECRET', signingSecret);
     ok(`SLACK_SIGNING_SECRET saved`);
 
-    // Optional: App ID for future auto-updates
+    // Optional: App ID + Config Refresh Token for future auto-updates
     console.log('');
-    info('Optional: save your App ID so the wizard can auto-update URLs next time.');
-    info('Find it at: Basic Information → App ID (starts with A...)');
+    info('Optional: save your App ID and Config Refresh Token so the wizard');
+    info('can auto-update manifest URLs on future runs (e.g. when ngrok changes).');
+    console.log('');
+    info(`App ID:         ${c.cyan}Basic Information${c.reset} → App ID (starts with A...)`);
+    info(`Refresh Token:  ${c.cyan}https://api.slack.com/apps${c.reset} → scroll to bottom`);
+    info(`                → "Your App Configuration Tokens" → Generate Token`);
+    info(`                → copy the ${c.bold}Refresh Token${c.reset} value`);
+    console.log('');
     const appId = await ask('App ID (or Enter to skip)');
     if (appId) {
       setEnvVar('SLACK_APP_ID', appId);
       ok(`SLACK_APP_ID saved`);
+
+      const configRefreshToken = await ask('Config Refresh Token (or Enter to skip)');
+      if (configRefreshToken) {
+        setEnvVar('SLACK_CONFIG_REFRESH_TOKEN', configRefreshToken);
+        ok(`SLACK_CONFIG_REFRESH_TOKEN saved — manifest URLs will auto-update on future runs`);
+      } else {
+        warn('Without a refresh token, you\'ll need to manually update URLs when your tunnel changes.');
+      }
     }
 
     // ── Step 5: OpenCode server ──

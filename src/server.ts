@@ -72,9 +72,21 @@ export function createServer(
     });
   });
 
-  // Start
+  // Start — wrap in a promise so EADDRINUSE is caught gracefully
   const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     console.log(`[opencode-channels] Server listening on ${host}:${info.port}`);
+  });
+
+  // Handle startup errors (EADDRINUSE, etc.)
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `[opencode-channels] Port ${port} is already in use.\n` +
+        `  Try: PORT=${port + 1} pnpm start  (or kill the process using port ${port})`
+      );
+      process.exit(1);
+    }
+    throw err;
   });
 
   return {
