@@ -11,6 +11,7 @@
     "clean": "pnpm -r clean",
     "e2e:slack": "tsx scripts/e2e-slack.ts",
     "e2e:test": "tsx scripts/e2e-test.ts",
+    "e2e:setup": "tsx scripts/e2e-setup.ts",
     "setup": "bash scripts/setup-e2e.sh"
   },
   "devDependencies": {
