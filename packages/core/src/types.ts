@@ -73,6 +73,8 @@ export interface AgentResponse {
   truncated?: boolean;
   modelName?: string;
   durationMs?: number;
+  /** Platform message ID from streaming updates — allows final sendResponse to edit in-place */
+  streamMsgId?: string;
 }
 
 // ─── Channel capabilities ───────────────────────────────────────────────────

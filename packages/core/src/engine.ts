@@ -190,6 +190,11 @@ export class ChannelEngineImpl implements ChannelEngine {
       const collectedFiles: FileOutput[] = [];
       const startTime = Date.now();
 
+      // Streaming state for progressive message updates in the platform
+      let streamMsgId: string | undefined;
+      let lastStreamUpdateAt = 0;
+      const STREAM_UPDATE_INTERVAL_MS = 1500; // Update platform every 1.5s
+
       try {
         for await (const event of client.promptStreaming(
           sessionId,
@@ -207,6 +212,29 @@ export class ChannelEngineImpl implements ChannelEngine {
             config,
             message,
           );
+
+          // Send progressive streaming updates to the platform
+          if (
+            event.type === 'text' &&
+            responseText.length > 0 &&
+            adapter.sendStreamingUpdate
+          ) {
+            const now = Date.now();
+            if (now - lastStreamUpdateAt >= STREAM_UPDATE_INTERVAL_MS) {
+              lastStreamUpdateAt = now;
+              try {
+                const newId = await adapter.sendStreamingUpdate(
+                  config,
+                  message,
+                  responseText + ' ▍',
+                  streamMsgId,
+                );
+                if (newId) streamMsgId = newId;
+              } catch {
+                // Non-fatal — streaming updates are best-effort
+              }
+            }
+          }
         }
       } catch (err) {
         const errMsg =
@@ -222,6 +250,7 @@ export class ChannelEngineImpl implements ChannelEngine {
         truncated: false,
         modelName: model?.modelID ?? 'default',
         durationMs: Date.now() - startTime,
+        streamMsgId,
       };
 
       await adapter.sendResponse(config, message, agentResponse);

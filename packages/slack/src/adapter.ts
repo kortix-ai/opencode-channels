@@ -132,6 +132,27 @@ export class SlackAdapter extends BaseAdapter {
     const meta = channelConfig.metadata as Record<string, unknown> | null;
     const customIdentity = meta?.customIdentity as { username?: string; iconUrl?: string } | undefined;
 
+    // If we have a streaming message, edit it with the final content + blocks
+    if (response.streamMsgId) {
+      const updateResult = await api.updateMessage({
+        channel,
+        ts: response.streamMsgId,
+        text: chunks[0] || fallbackText,
+        blocks,
+      });
+      if (!updateResult.ok) {
+        console.warn(`[SLACK] Failed to update streaming message: ${updateResult.error}`);
+        // Fall through to post a new message
+      } else {
+        // Send remaining chunks as new messages (rare — only if response > 4000 chars)
+        for (let i = 1; i < chunks.length; i++) {
+          await api.postMessage({ channel, text: chunks[i], thread_ts: threadTs });
+        }
+        return;
+      }
+    }
+
+    // No streaming message or update failed — post fresh
     let firstResult = await api.postMessage({
       channel,
       text: chunks[0] || fallbackText,
@@ -252,6 +273,47 @@ export class SlackAdapter extends BaseAdapter {
 
     const api = new SlackApi(botToken);
     await api.addReaction(channel, message.externalId, SlackAdapter.FILES_EMOJI);
+  }
+
+  override async sendStreamingUpdate(
+    channelConfig: ChannelConfig,
+    message: NormalizedMessage,
+    text: string,
+    streamMsgId?: string,
+  ): Promise<string | undefined> {
+    const rawPayload = message.raw as Record<string, unknown> | undefined;
+
+    // Don't stream for slash commands (they use response_url)
+    if (rawPayload?._slackCommand) return undefined;
+
+    const botToken = this.getBotToken(channelConfig);
+    if (!botToken) return undefined;
+
+    const event = rawPayload?.event as Record<string, unknown> | undefined;
+    const channel = event?.channel as string;
+    if (!channel) return undefined;
+
+    const api = new SlackApi(botToken);
+    const threadTs = message.threadId || message.externalId;
+    const slackText = markdownToSlack(text);
+
+    if (streamMsgId) {
+      // Edit existing streaming message
+      const result = await api.updateMessage({
+        channel,
+        ts: streamMsgId,
+        text: slackText,
+      });
+      return result.ok ? streamMsgId : undefined;
+    } else {
+      // Post initial streaming message
+      const result = await api.postMessage({
+        channel,
+        text: slackText,
+        thread_ts: threadTs,
+      });
+      return result.ok && result.ts ? result.ts : undefined;
+    }
   }
 
   override async onChannelRemoved(channelConfig: ChannelConfig): Promise<void> {

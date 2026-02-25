@@ -81,6 +81,22 @@ export interface ChannelAdapter {
 
   /** React to indicate files were created or modified */
   reactFilesChanged?(config: ChannelConfig, message: NormalizedMessage): Promise<void>;
+
+  /**
+   * Send a streaming progress update while the agent is generating a response.
+   * Called periodically with the accumulated text so far.
+   *
+   * Returns the platform message ID (e.g. Slack `ts`) so subsequent calls can
+   * edit the same message instead of posting new ones.
+   *
+   * @param streamMsgId - The ID returned by a previous call (undefined on first call)
+   */
+  sendStreamingUpdate?(
+    config: ChannelConfig,
+    message: NormalizedMessage,
+    text: string,
+    streamMsgId?: string,
+  ): Promise<string | undefined>;
 }
 
 // ─── ChannelEngine interface ────────────────────────────────────────────────
@@ -152,4 +168,13 @@ export abstract class BaseAdapter implements ChannelAdapter {
   async reactComplete(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
   async reactError(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
   async reactFilesChanged(_config: ChannelConfig, _message: NormalizedMessage): Promise<void> {}
+
+  async sendStreamingUpdate(
+    _config: ChannelConfig,
+    _message: NormalizedMessage,
+    _text: string,
+    _streamMsgId?: string,
+  ): Promise<string | undefined> {
+    return undefined;
+  }
 }

@@ -20,6 +20,7 @@ export interface SlackUpdateMessageOptions {
   channel: string;
   ts: string;
   text: string;
+  blocks?: unknown[];
 }
 
 export interface SlackAuthTestResult {
