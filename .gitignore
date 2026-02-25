@@ -10,3 +10,4 @@ dist/
 *.tsbuildinfo
 .turbo/
 ngrok-url.txt
+slack-manifest.json

@@ -13,24 +13,23 @@ Slack @mention --> Public URL --> Chat SDK Webhook --> OpenCode (SSE) --> Stream
 git clone https://github.com/kortix-ai/opencode-channels.git
 cd opencode-channels && pnpm install
 
-# 2. Create your Slack app (one-time, ~1 minute)
-#    → https://api.slack.com/apps → "Create New App" → "From a manifest"
-#    → Select your workspace, paste the contents of slack-manifest.yml
-#    → Click "Create" → "Install to Workspace" → "Allow"
-
-# 3. Copy tokens into .env.test
-cp .env.example .env.test
-#    → Bot Token (xoxb-...):  OAuth & Permissions page
-#    → Signing Secret:        Basic Information page
-
-# 4. Start OpenCode (in your project directory)
+# 2. Start OpenCode (in your project directory)
 opencode serve --port 1707
 
-# 5. Run the setup wizard
+# 3. Start ngrok (or have any public URL ready)
+ngrok http 3456
+
+# 4. Run the setup wizard — it handles everything
 pnpm e2e:slack
 ```
 
-The wizard detects ngrok (or accepts `--url`), auto-updates the Slack app webhook URLs, boots the bot, and runs a smoke test. Then just `@mention` the bot in Slack.
+The wizard will:
+1. Detect your ngrok URL (or ask for any public URL)
+2. Ask for a bot name, generate a personalized Slack app manifest
+3. Walk you through creating the app and copying 2 tokens
+4. Boot the bot, run a smoke test, show a dashboard
+
+No manual Slack dashboard configuration needed — everything is in the generated manifest.
 
 ## How It Works
 
@@ -79,64 +78,30 @@ Multi-turn conversations work automatically -- replies in a thread reuse the sam
 
 ## Setup
 
-### Step 1: Create the Slack App
+The setup wizard (`pnpm e2e:slack`) handles everything interactively:
 
-We ship a [`slack-manifest.yml`](slack-manifest.yml) that pre-configures everything — scopes, events, slash commands, bot name. No manual checkbox clicking.
+1. Detects your public URL (ngrok, or `--url https://your-server.com`)
+2. Asks for a bot name (or `--name "My Bot"`)
+3. Generates a Slack app manifest JSON with your URL + name baked in
+4. Tells you exactly where to paste it to create the Slack app
+5. Collects your Bot Token + Signing Secret (saves to `.env.test`)
+6. Verifies OpenCode server connectivity
+7. Boots the bot, Slack auto-verifies the webhook URL
+8. Runs a smoke test, shows a dashboard
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **"Create New App"** → **"From a manifest"**
-2. Select your workspace
-3. Switch to the **YAML** tab, paste the contents of `slack-manifest.yml`
-4. Click **"Create"** → **"Install to Workspace"** → **"Allow"**
+**Prerequisites**: Node.js >= 18, OpenCode server running, a public URL (ngrok/Cloudflare Tunnel/server IP).
 
-### Step 2: Copy Tokens
+**Returning users**: Just run `pnpm e2e:slack` again — tokens load from `.env.test`, URLs auto-update if you saved your App ID.
 
-From your [Slack app dashboard](https://api.slack.com/apps):
+### CLI Options
 
-| Token | Where to find it | Looks like |
-|-------|-------------------|------------|
-| **Bot Token** | OAuth & Permissions → Bot User OAuth Token | `xoxb-...` |
-| **Signing Secret** | Basic Information → App Credentials → Signing Secret | hex string |
-
-Put them in `.env.test`:
-
-```bash
-cp .env.example .env.test
-# Edit .env.test with your two tokens
-```
-
-### Step 3: Run
-
-```bash
-# Terminal 1 — OpenCode server
-opencode serve --port 1707
-
-# Terminal 2 — Bot (the wizard handles the rest)
-pnpm e2e:slack
-```
-
-The wizard will:
-- Detect ngrok or prompt for your public URL (`--url https://your-server.com`)
-- Auto-update the Slack app webhook URLs via the Manifest API (if `SLACK_APP_ID` + `SLACK_CONFIG_REFRESH_TOKEN` are set)
-- Boot the Chat SDK bot
-- Run a smoke test
-- Show a status dashboard
-
-**No ngrok?** Use `--url` to pass any publicly reachable URL:
-
-```bash
-pnpm e2e:slack --url https://bot.example.com
-```
-
-### Step 4 (optional): Auto-manifest for URL updates
-
-If you want the wizard to automatically update webhook URLs when your tunnel URL changes, add these to `.env.test`:
-
-| Token | Where to find it |
-|-------|-------------------|
-| `SLACK_APP_ID` | Basic Information → App ID (starts with `A0...`) |
-| `SLACK_CONFIG_REFRESH_TOKEN` | [api.slack.com/authentication/config-tokens](https://api.slack.com/authentication/config-tokens) → Generate Token |
-
-Without these, you'll need to manually update the Event Subscriptions URL in the Slack dashboard when your URL changes.
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | Public URL (skip ngrok detection) |
+| `--name <name>` | Bot display name (default: OpenCode) |
+| `--port <port>` | Webhook server port (default: 3456) |
+| `--skip-ngrok` | Don't auto-detect ngrok |
+| `--skip-manifest` | Don't auto-update manifest |
 
 ### Production Deployment
 
