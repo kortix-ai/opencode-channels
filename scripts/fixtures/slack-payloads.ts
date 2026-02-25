@@ -1,8 +1,8 @@
 /**
- * Slack webhook payload fixtures for E2E testing.
+ * Slack webhook payload fixtures for E2E testing (Chat SDK edition).
  *
- * These generate realistic Slack Events API payloads for
- * app_mention, message, reaction_added, and slash commands.
+ * Generates realistic Slack Events API payloads for testing the Chat SDK
+ * webhook handler at /api/webhooks/slack.
  */
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -80,8 +80,12 @@ function nextEventId(): string {
  */
 export function makeAppMention(
   text: string,
-  overrides?: Partial<typeof DEFAULTS>,
+  options?: {
+    threadTs?: string;
+    userId?: string;
+  } & Partial<typeof DEFAULTS>,
 ): SlackEventPayload {
+  const { threadTs, ...overrides } = options || {};
   const d = { ...DEFAULTS, ...overrides };
   const ts = nextTs();
 
@@ -96,6 +100,7 @@ export function makeAppMention(
       ts,
       channel: d.channel,
       event_ts: ts,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
     },
     type: 'event_callback',
     event_id: nextEventId(),
@@ -120,26 +125,34 @@ export function makeMessage(
   options?: {
     isDm?: boolean;
     threadTs?: string;
+    userId?: string;
+    botId?: string;
   } & Partial<typeof DEFAULTS>,
 ): SlackEventPayload {
-  const { isDm, threadTs, ...overrides } = options || {};
+  const { isDm, threadTs, botId, ...overrides } = options || {};
   const d = { ...DEFAULTS, ...overrides };
   const ts = nextTs();
+
+  const event: SlackEventPayload['event'] = {
+    type: 'message',
+    user: d.userId,
+    text,
+    ts,
+    channel: isDm ? `D${d.userId.slice(1)}` : d.channel,
+    event_ts: ts,
+    channel_type: isDm ? 'im' : 'channel',
+    ...(threadTs ? { thread_ts: threadTs } : {}),
+  };
+
+  if (botId) {
+    event.bot_id = botId;
+  }
 
   return {
     token: d.token,
     team_id: d.teamId,
     api_app_id: d.appId,
-    event: {
-      type: 'message',
-      user: d.userId,
-      text,
-      ts,
-      channel: isDm ? `D${d.userId.slice(1)}` : d.channel,
-      event_ts: ts,
-      channel_type: isDm ? 'im' : 'channel',
-      ...(threadTs ? { thread_ts: threadTs } : {}),
-    },
+    event,
     type: 'event_callback',
     event_id: nextEventId(),
     event_time: Math.floor(Date.now() / 1000),

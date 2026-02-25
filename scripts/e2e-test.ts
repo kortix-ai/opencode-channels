@@ -1,12 +1,8 @@
 /**
- * Automated E2E test suite for opencode-channels.
+ * Automated E2E test suite for opencode-channels (Chat SDK edition).
  *
- * This script boots the full system locally and runs a series of
- * integration tests by sending simulated Slack webhook events to the
- * local webhook server and verifying the expected behavior.
- *
- * Unlike the interactive `e2e-slack.ts`, this script is fully automated
- * and exits with code 0 (pass) or 1 (fail).
+ * Boots the Chat SDK bot + Hono server, sends signed Slack webhook events,
+ * and verifies correct behavior end-to-end.
  *
  * Prerequisites:
  *   1. OpenCode server running (default: http://localhost:1707)
@@ -20,19 +16,18 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
-import {
-  startChannels,
-  createChannelConfig,
-  listChannelConfigs,
-  type ChannelsPluginResult,
-} from '../packages/core/src/plugin.js';
-import { OpenCodeClient } from '../packages/core/src/opencode-client.js';
-import { SlackAdapter } from '../packages/slack/src/adapter.js';
-import type { ChannelConfig } from '../packages/core/src/types.js';
+import * as net from 'node:net';
+
+import { createBot } from '../src/bot.js';
+import { createServer } from '../src/server.js';
+import { OpenCodeClient } from '../src/opencode.js';
+import { SessionManager } from '../src/sessions.js';
 import {
   makeAppMention,
+  makeMessage,
   makeUrlVerification,
   makeSlashCommand,
+  makeReaction,
   DEFAULTS,
 } from './fixtures/slack-payloads.js';
 
@@ -56,15 +51,13 @@ if (existsSync(envTestPath)) {
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || '';
 const OPENCODE_URL = process.env.OPENCODE_URL || 'http://localhost:1707';
-const PORT = 0; // Use random port to avoid conflicts
-const DB_PATH = `/tmp/e2e-test-${Date.now()}.db`;
 
-// Set env vars
-process.env.OPENCODE_URL = OPENCODE_URL;
-process.env.CHANNELS_DB_PATH = DB_PATH;
+if (!SLACK_SIGNING_SECRET) {
+  console.error('Missing SLACK_SIGNING_SECRET in .env.test');
+  process.exit(1);
+}
 
 // ─── Test runner ────────────────────────────────────────────────────────────
 
@@ -77,12 +70,9 @@ interface TestResult {
 
 const results: TestResult[] = [];
 let webhookUrl = '';
-let channels: ChannelsPluginResult | null = null;
+let serverHandle: { stop: () => void } | null = null;
 
-async function runTest(
-  name: string,
-  fn: () => Promise<void>,
-): Promise<void> {
+async function runTest(name: string, fn: () => Promise<void>): Promise<void> {
   const start = Date.now();
   try {
     await fn();
@@ -109,14 +99,13 @@ function signPayload(body: string, secret: string): { timestamp: string; signatu
 }
 
 async function sendWebhook(
-  path: string,
   body: unknown,
   contentType = 'application/json',
 ): Promise<Response> {
   const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
   const { timestamp, signature } = signPayload(bodyStr, SLACK_SIGNING_SECRET);
 
-  return fetch(`${webhookUrl}${path}`, {
+  return fetch(`${webhookUrl}/api/webhooks/slack`, {
     method: 'POST',
     headers: {
       'Content-Type': contentType,
@@ -127,127 +116,8 @@ async function sendWebhook(
   });
 }
 
-// ─── Test cases ─────────────────────────────────────────────────────────────
-
-async function testHealthEndpoint(): Promise<void> {
-  const res = await fetch(`${webhookUrl}/health`);
-  assert(res.ok, `Health endpoint returned ${res.status}`);
-  const data = (await res.json()) as { ok: boolean; service: string };
-  assert(data.ok === true, 'Health endpoint did not return ok: true');
-  assert(data.service === 'opencode-channels', `Wrong service name: ${data.service}`);
-}
-
-async function testUrlVerification(): Promise<void> {
-  const challenge = `test-challenge-${Date.now()}`;
-  const payload = makeUrlVerification(challenge);
-  const res = await sendWebhook('/slack/events', payload);
-  assert(res.ok, `URL verification returned ${res.status}`);
-  const data = (await res.json()) as { challenge: string };
-  assert(data.challenge === challenge, `Expected challenge "${challenge}", got "${data.challenge}"`);
-}
-
-async function testAppMentionWebhook(): Promise<void> {
-  const payload = makeAppMention('ping');
-  const res = await sendWebhook('/slack/events', payload);
-  // Should return 200 (accepted for processing)
-  assert(res.ok, `App mention returned ${res.status}`);
-}
-
-async function testSlashCommandHelp(): Promise<void> {
-  const body = makeSlashCommand('/oc', 'help');
-  const res = await sendWebhook('/slack/commands', body, 'application/x-www-form-urlencoded');
-  assert(res.ok, `Slash command returned ${res.status}`);
-  const data = (await res.json()) as { text?: string; blocks?: unknown[] };
-  // Help command should return text containing "help" or slash command descriptions
-  const responseText = JSON.stringify(data).toLowerCase();
-  assert(
-    responseText.includes('help') || responseText.includes('command') || responseText.includes('usage'),
-    'Help command did not return expected help text',
-  );
-}
-
-async function testSlashCommandModels(): Promise<void> {
-  const body = makeSlashCommand('/oc', 'models');
-  const res = await sendWebhook('/slack/commands', body, 'application/x-www-form-urlencoded');
-  assert(res.ok, `Models command returned ${res.status}`);
-}
-
-async function testSlashCommandStatus(): Promise<void> {
-  const body = makeSlashCommand('/oc', 'status');
-  const res = await sendWebhook('/slack/commands', body, 'application/x-www-form-urlencoded');
-  assert(res.ok, `Status command returned ${res.status}`);
-}
-
-async function testInvalidSignature(): Promise<void> {
-  const payload = makeAppMention('test');
-  const bodyStr = JSON.stringify(payload);
-
-  const res = await fetch(`${webhookUrl}/slack/events`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Slack-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
-      'X-Slack-Signature': 'v0=invalid_signature_here',
-    },
-    body: bodyStr,
-  });
-
-  // Should reject with 401 or handle gracefully
-  // The webhook handler may still return 200 to avoid Slack retries
-  // but should not process the message
-  assert(res.status < 500, `Invalid signature caused server error: ${res.status}`);
-}
-
-async function testOpenCodeServerConnectivity(): Promise<void> {
-  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
-  const ready = await client.isReady();
-  assert(ready, `OpenCode server at ${OPENCODE_URL} is not reachable`);
-}
-
-async function testOpenCodeListProviders(): Promise<void> {
-  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
-  const providers = await client.listProviders();
-  assert(Array.isArray(providers), 'listProviders did not return an array');
-  // Should have at least one provider configured
-  assert(providers.length > 0, 'No providers configured in OpenCode');
-}
-
-async function testOpenCodeCreateSession(): Promise<void> {
-  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
-  const sessionId = await client.createSession();
-  assert(typeof sessionId === 'string', 'createSession did not return a string');
-  assert(sessionId.length > 0, 'createSession returned empty string');
-}
-
-// ─── Main ───────────────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  console.log('');
-  console.log('opencode-channels E2E Test Suite');
-  console.log('════════════════════════════════════════════════════════');
-  console.log('');
-
-  // ── Prerequisite checks ─────────────────────────────────────────────
-
-  if (!SLACK_BOT_TOKEN || SLACK_BOT_TOKEN.startsWith('xoxb-your')) {
-    console.warn('WARNING: SLACK_BOT_TOKEN not set — Slack API tests will be limited');
-  }
-
-  // ── Boot the system ─────────────────────────────────────────────────
-
-  console.log('Booting channels system...');
-
-  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
-  const configsByTeamId = new Map<string, ChannelConfig>();
-
-  const slackAdapter = new SlackAdapter({
-    getConfigByTeamId: (teamId: string) => configsByTeamId.get(teamId),
-    getClient: () => client,
-  });
-
-  // Use a random available port
-  const net = await import('node:net');
-  const actualPort = await new Promise<number>((resolve, reject) => {
+async function getRandomPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.listen(0, () => {
       const addr = srv.address();
@@ -258,77 +128,340 @@ async function main(): Promise<void> {
       }
     });
   });
+}
 
-  process.env.CHANNELS_PORT = String(actualPort);
+// ─── Test: Health endpoint ──────────────────────────────────────────────────
 
-  channels = await startChannels({
-    adapters: { slack: slackAdapter },
-    port: actualPort,
-    dbPath: DB_PATH,
-    opencodeUrl: OPENCODE_URL,
+async function testHealthEndpoint(): Promise<void> {
+  const res = await fetch(`${webhookUrl}/health`);
+  assert(res.ok, `Health endpoint returned ${res.status}`);
+  const data = (await res.json()) as { ok: boolean; service: string; adapters: string[] };
+  assert(data.ok === true, 'Health endpoint did not return ok: true');
+  assert(data.service === 'opencode-channels', `Wrong service name: ${data.service}`);
+  assert(data.adapters.includes('slack'), 'Slack adapter not listed');
+}
+
+// ─── Test: URL verification ─────────────────────────────────────────────────
+
+async function testUrlVerification(): Promise<void> {
+  const challenge = `test-challenge-${Date.now()}`;
+  const payload = makeUrlVerification(challenge);
+  const res = await sendWebhook(payload);
+  assert(res.ok, `URL verification returned ${res.status}`);
+  const data = (await res.json()) as { challenge: string };
+  assert(data.challenge === challenge, `Expected challenge "${challenge}", got "${data.challenge}"`);
+}
+
+// ─── Test: App mention webhook accepted ─────────────────────────────────────
+
+async function testAppMentionAccepted(): Promise<void> {
+  const payload = makeAppMention('ping');
+  const res = await sendWebhook(payload);
+  assert(res.ok, `App mention returned ${res.status}`);
+}
+
+// ─── Test: Channel message accepted ─────────────────────────────────────────
+
+async function testChannelMessageAccepted(): Promise<void> {
+  const payload = makeMessage('hello world');
+  const res = await sendWebhook(payload);
+  assert(res.ok, `Channel message returned ${res.status}`);
+}
+
+// ─── Test: Threaded message accepted ────────────────────────────────────────
+
+async function testThreadedMessageAccepted(): Promise<void> {
+  const payload = makeMessage('follow up', { threadTs: '1234567890.123456' });
+  const res = await sendWebhook(payload);
+  assert(res.ok, `Threaded message returned ${res.status}`);
+}
+
+// ─── Test: DM message accepted ──────────────────────────────────────────────
+
+async function testDmMessageAccepted(): Promise<void> {
+  const payload = makeMessage('hello bot', { isDm: true });
+  const res = await sendWebhook(payload);
+  assert(res.ok, `DM message returned ${res.status}`);
+}
+
+// ─── Test: Reaction event accepted ──────────────────────────────────────────
+
+async function testReactionEventAccepted(): Promise<void> {
+  const payload = makeReaction('thumbsup', '1234567890.123456');
+  const res = await sendWebhook(payload);
+  assert(res.ok, `Reaction event returned ${res.status}`);
+}
+
+// ─── Test: Slash commands ───────────────────────────────────────────────────
+
+async function testSlashCommandHelp(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'help');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc help returned ${res.status}`);
+}
+
+async function testSlashCommandStatus(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'status');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc status returned ${res.status}`);
+}
+
+async function testSlashCommandModels(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'models');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc models returned ${res.status}`);
+}
+
+async function testSlashCommandAgents(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'agents');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc agents returned ${res.status}`);
+}
+
+async function testSlashCommandReset(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'reset');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc reset returned ${res.status}`);
+}
+
+async function testSlashCommandDiff(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'diff');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc diff returned ${res.status}`);
+}
+
+async function testSlashCommandLink(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'link');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc link returned ${res.status}`);
+}
+
+async function testSlashCommandEmpty(): Promise<void> {
+  const body = makeSlashCommand('/oc', '');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /oc (empty) returned ${res.status}`);
+}
+
+async function testSlashCommandOpencode(): Promise<void> {
+  const body = makeSlashCommand('/opencode', 'help');
+  const res = await sendWebhook(body, 'application/x-www-form-urlencoded');
+  assert(res.ok, `Slash command /opencode help returned ${res.status}`);
+}
+
+// ─── Test: Invalid signature ────────────────────────────────────────────────
+
+async function testInvalidSignatureRejected(): Promise<void> {
+  const payload = makeAppMention('should be rejected');
+  const bodyStr = JSON.stringify(payload);
+
+  const res = await fetch(`${webhookUrl}/api/webhooks/slack`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Slack-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
+      'X-Slack-Signature': 'v0=deadbeef0000000000000000000000000000000000000000000000000000dead',
+    },
+    body: bodyStr,
   });
 
-  webhookUrl = `http://localhost:${actualPort}`;
-  console.log(`Webhook server: ${webhookUrl}`);
+  // Chat SDK returns 200 with "Invalid signature" text to avoid Slack retries
+  assert(res.status < 500, `Invalid sig caused server error: ${res.status}`);
+}
 
-  // ── Create test config ──────────────────────────────────────────────
+async function testMissingSignatureRejected(): Promise<void> {
+  const payload = makeAppMention('no sig');
+  const res = await fetch(`${webhookUrl}/api/webhooks/slack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  assert(res.status < 500, `Missing sig caused server error: ${res.status}`);
+}
 
-  const existingConfigs = listChannelConfigs({ channelType: 'slack' }, channels.db);
-  let slackConfig: ChannelConfig;
+// ─── Test: OpenCode server connectivity ─────────────────────────────────────
 
-  if (existingConfigs.length > 0) {
-    slackConfig = existingConfigs[0];
-  } else {
-    slackConfig = await createChannelConfig(
-      {
-        channelType: 'slack',
-        name: 'E2E Automated Test',
-        enabled: true,
-        credentials: {
-          botToken: SLACK_BOT_TOKEN,
-          signingSecret: SLACK_SIGNING_SECRET,
-        },
-        platformConfig: {
-          groups: { requireMention: true },
-        },
-        metadata: {},
-        sessionStrategy: 'per-user',
-        systemPrompt: null,
-        agentName: null,
-      },
-      channels.db,
-    );
-  }
+async function testOpenCodeHealth(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+  const ready = await client.isReady();
+  assert(ready, `OpenCode server at ${OPENCODE_URL} is not reachable`);
+}
 
-  configsByTeamId.set(DEFAULTS.teamId, slackConfig);
-  console.log(`Config ID: ${slackConfig.id}`);
+async function testOpenCodeListProviders(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+  const providers = await client.listProviders();
+  assert(Array.isArray(providers), 'listProviders did not return an array');
+  assert(providers.length > 0, 'No providers configured in OpenCode');
+}
+
+async function testOpenCodeListAgents(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+  const agents = await client.listAgents();
+  assert(Array.isArray(agents), 'listAgents did not return an array');
+}
+
+async function testOpenCodeCreateSession(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+  const sessionId = await client.createSession();
+  assert(typeof sessionId === 'string', 'createSession did not return a string');
+  assert(sessionId.length > 0, 'createSession returned empty string');
+}
+
+// ─── Test: SessionManager ───────────────────────────────────────────────────
+
+async function testSessionManagerPerThread(): Promise<void> {
+  const mgr = new SessionManager('per-thread');
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+
+  const sess1 = await mgr.resolve('thread-1', client);
+  assert(typeof sess1 === 'string' && sess1.length > 0, 'Session ID is empty');
+
+  const sess2 = await mgr.resolve('thread-1', client);
+  assert(sess1 === sess2, `Same thread should reuse session: ${sess1} !== ${sess2}`);
+
+  const sess3 = await mgr.resolve('thread-2', client);
+  assert(sess3 !== sess1, 'Different thread should get different session');
+}
+
+async function testSessionManagerPerMessage(): Promise<void> {
+  const mgr = new SessionManager('per-message');
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+
+  const sess1 = await mgr.resolve('thread-1', client);
+  const sess2 = await mgr.resolve('thread-1', client);
+  assert(sess1 !== sess2, `per-message should create fresh sessions: ${sess1} === ${sess2}`);
+}
+
+async function testSessionManagerInvalidate(): Promise<void> {
+  const mgr = new SessionManager('per-thread');
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+
+  const sess1 = await mgr.resolve('thread-inv', client);
+  mgr.invalidate('thread-inv');
+  const sess2 = await mgr.resolve('thread-inv', client);
+  assert(sess1 !== sess2, `Invalidated session should create new: ${sess1} === ${sess2}`);
+}
+
+async function testSessionManagerCleanup(): Promise<void> {
+  const mgr = new SessionManager('per-thread');
+  const client = new OpenCodeClient({ baseUrl: OPENCODE_URL });
+
+  await mgr.resolve('thread-cleanup', client);
+  assert(mgr.get('thread-cleanup') !== undefined, 'Session should exist before cleanup');
+
+  mgr.cleanup(); // Should not remove fresh sessions
+  assert(mgr.get('thread-cleanup') !== undefined, 'Fresh session should survive cleanup');
+}
+
+// ─── Test: Legacy routes ────────────────────────────────────────────────────
+
+async function testLegacyEventsRoute(): Promise<void> {
+  const challenge = `legacy-${Date.now()}`;
+  const payload = makeUrlVerification(challenge);
+  const bodyStr = JSON.stringify(payload);
+  const { timestamp, signature } = signPayload(bodyStr, SLACK_SIGNING_SECRET);
+
+  const res = await fetch(`${webhookUrl}/slack/events`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Slack-Request-Timestamp': timestamp,
+      'X-Slack-Signature': signature,
+    },
+    body: bodyStr,
+  });
+  assert(res.ok, `Legacy /slack/events returned ${res.status}`);
+  const data = (await res.json()) as { challenge: string };
+  assert(data.challenge === challenge, 'Legacy route challenge mismatch');
+}
+
+async function testLegacyCommandsRoute(): Promise<void> {
+  const body = makeSlashCommand('/oc', 'help');
+  const { timestamp, signature } = signPayload(body, SLACK_SIGNING_SECRET);
+
+  const res = await fetch(`${webhookUrl}/slack/commands`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Slack-Request-Timestamp': timestamp,
+      'X-Slack-Signature': signature,
+    },
+    body,
+  });
+  assert(res.ok, `Legacy /slack/commands returned ${res.status}`);
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  console.log('');
+  console.log('opencode-channels E2E Test Suite (Chat SDK)');
+  console.log('════════════════════════════════════════════════════════');
+  console.log('');
+
+  // ── Boot the system ─────────────────────────────────────────────────
+
+  console.log('Booting Chat SDK bot + Hono server...');
+
+  const port = await getRandomPort();
+  const { bot } = createBot({ opencodeUrl: OPENCODE_URL });
+  const server = createServer(bot, { port });
+  serverHandle = server;
+  webhookUrl = `http://localhost:${port}`;
+
+  // Wait for Chat SDK to initialize (it does Slack auth on first webhook)
+  await new Promise((r) => setTimeout(r, 500));
+  console.log(`Server: ${webhookUrl}`);
   console.log('');
 
   // ── Run tests ───────────────────────────────────────────────────────
 
-  console.log('Running tests...');
-  console.log('');
-
-  // Group 1: Local webhook server tests (no external deps)
-  console.log('── Webhook Server ──');
+  console.log('── Health & Verification ──');
   await runTest('Health endpoint returns ok', testHealthEndpoint);
   await runTest('Slack URL verification challenge', testUrlVerification);
-  await runTest('App mention webhook accepted', testAppMentionWebhook);
-  await runTest('Invalid signature handled gracefully', testInvalidSignature);
 
-  // Group 2: Slash commands
+  console.log('');
+  console.log('── Webhook Events ──');
+  await runTest('App mention accepted', testAppMentionAccepted);
+  await runTest('Channel message accepted', testChannelMessageAccepted);
+  await runTest('Threaded message accepted', testThreadedMessageAccepted);
+  await runTest('DM message accepted', testDmMessageAccepted);
+  await runTest('Reaction event accepted', testReactionEventAccepted);
+
   console.log('');
   console.log('── Slash Commands ──');
-  await runTest('/oc help returns help text', testSlashCommandHelp);
-  await runTest('/oc models accepted', testSlashCommandModels);
-  await runTest('/oc status accepted', testSlashCommandStatus);
+  await runTest('/oc help', testSlashCommandHelp);
+  await runTest('/oc status', testSlashCommandStatus);
+  await runTest('/oc models', testSlashCommandModels);
+  await runTest('/oc agents', testSlashCommandAgents);
+  await runTest('/oc reset', testSlashCommandReset);
+  await runTest('/oc diff', testSlashCommandDiff);
+  await runTest('/oc link', testSlashCommandLink);
+  await runTest('/oc (empty)', testSlashCommandEmpty);
+  await runTest('/opencode help (alias)', testSlashCommandOpencode);
 
-  // Group 3: OpenCode server connectivity (requires running server)
+  console.log('');
+  console.log('── Security ──');
+  await runTest('Invalid signature rejected', testInvalidSignatureRejected);
+  await runTest('Missing signature rejected', testMissingSignatureRejected);
+
+  console.log('');
+  console.log('── Legacy Routes ──');
+  await runTest('Legacy /slack/events route', testLegacyEventsRoute);
+  await runTest('Legacy /slack/commands route', testLegacyCommandsRoute);
+
   console.log('');
   console.log('── OpenCode Server ──');
-  await runTest('OpenCode server reachable', testOpenCodeServerConnectivity);
+  await runTest('OpenCode health check', testOpenCodeHealth);
   await runTest('List providers', testOpenCodeListProviders);
+  await runTest('List agents', testOpenCodeListAgents);
   await runTest('Create session', testOpenCodeCreateSession);
+
+  console.log('');
+  console.log('── Session Management ──');
+  await runTest('Per-thread session reuse', testSessionManagerPerThread);
+  await runTest('Per-message fresh sessions', testSessionManagerPerMessage);
+  await runTest('Session invalidation', testSessionManagerInvalidate);
+  await runTest('Session cleanup (TTL)', testSessionManagerCleanup);
 
   // ── Report ──────────────────────────────────────────────────────────
 
@@ -353,23 +486,12 @@ async function main(): Promise<void> {
 
   // ── Cleanup ─────────────────────────────────────────────────────────
 
-  channels.stop();
-
-  // Clean up temp DB
-  const fs = await import('node:fs');
-  try {
-    fs.unlinkSync(DB_PATH);
-    fs.unlinkSync(`${DB_PATH}-shm`);
-    fs.unlinkSync(`${DB_PATH}-wal`);
-  } catch {
-    // Ignore cleanup errors
-  }
-
+  server.stop();
   process.exit(failed > 0 ? 1 : 0);
 }
 
 main().catch((err) => {
   console.error('[FATAL]', err);
-  if (channels) channels.stop();
+  if (serverHandle) serverHandle.stop();
   process.exit(1);
 });

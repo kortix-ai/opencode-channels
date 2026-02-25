@@ -7,6 +7,22 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@chat-adapter/slack':
+        specifier: ^4.14.0
+        version: 4.14.0
+      '@chat-adapter/state-memory':
+        specifier: ^4.14.0
+        version: 4.14.0
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.9(hono@4.12.2)
+      chat:
+        specifier: ^4.14.0
+        version: 4.14.0
+      hono:
+        specifier: ^4.12.0
+        version: 4.12.2
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.8
@@ -171,6 +187,14 @@ packages:
       chat: 4.14.0
     transitivePeerDependencies:
       - debug
+      - supports-color
+    dev: false
+
+  /@chat-adapter/state-memory@4.14.0:
+    resolution: {integrity: sha512-6YWMok5/1tS81lXspXhObmXVN+Zaopdd4ZMMh3r2WVeCCLCvbRYz9X9tqA+QuI2XCWxUcAPuWavFATgn+PdkLw==}
+    dependencies:
+      chat: 4.14.0
+    transitivePeerDependencies:
       - supports-color
     dev: false
 

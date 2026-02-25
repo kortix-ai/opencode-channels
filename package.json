@@ -1,24 +1,31 @@
 {
   "name": "opencode-channels",
   "private": true,
-  "version": "0.1.0",
-  "description": "Standalone channel adapters for OpenCode — Slack, Discord, Telegram, and more",
+  "type": "module",
+  "version": "0.2.0",
+  "description": "Connect OpenCode to Slack, Discord, and more via the Chat SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "build": "pnpm -r build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "tsc --build --noEmit",
-    "clean": "pnpm -r clean",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
     "e2e:slack": "tsx scripts/e2e-slack.ts",
     "e2e:test": "tsx scripts/e2e-test.ts",
-    "e2e:setup": "tsx scripts/e2e-setup.ts",
-    "setup": "bash scripts/setup-e2e.sh"
+    "e2e:setup": "tsx scripts/e2e-setup.ts"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^3.2.1",
-    "tsx": "^4.19.0",
     "@types/node": "^22.0.0",
-    "@types/better-sqlite3": "^7.6.8"
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@chat-adapter/slack": "^4.14.0",
+    "@chat-adapter/state-memory": "^4.14.0",
+    "@hono/node-server": "^1.13.0",
+    "chat": "^4.14.0",
+    "hono": "^4.12.0"
   }
 }
