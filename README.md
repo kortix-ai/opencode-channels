@@ -1,6 +1,6 @@
 # opencode-channels
 
-Connect [OpenCode](https://github.com/anomalyco/opencode) to **Slack** as a chatbot. Built on the [Vercel Chat SDK](https://github.com/nichochar/chat) for native streaming, reactions, and slash commands.
+Connect [OpenCode](https://github.com/anomalyco/opencode) to **Slack** as a chatbot. Built on the [Chat SDK](https://www.chat-sdk.dev/) for native streaming, reactions, and slash commands.
 
 ```
 Slack @mention --> Public URL --> Chat SDK Webhook --> OpenCode (SSE) --> Streamed Response --> Slack
