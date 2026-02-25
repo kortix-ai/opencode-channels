@@ -1,0 +1,46 @@
+services:
+  # Run unit tests (sessions, opencode client, fixtures)
+  unit-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npx", "tsx", "test/unit.test.ts"]
+    environment:
+      - SLACK_SIGNING_SECRET=test-secret-for-docker
+      - SLACK_BOT_TOKEN=xoxb-test-token
+      - OPENCODE_URL=http://localhost:9999
+    tmpfs:
+      - /tmp
+
+  # Run E2E integration tests (mock OpenCode + mock Slack API + real bot)
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npx", "tsx", "test/e2e.test.ts"]
+    environment:
+      - SLACK_SIGNING_SECRET=test-secret-for-docker
+      - SLACK_BOT_TOKEN=xoxb-test-token
+      - OPENCODE_URL=http://localhost:9999
+    tmpfs:
+      - /tmp
+
+  # Run ALL tests together
+  all-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npx", "tsx", "test/all.test.ts"]
+    environment:
+      - SLACK_SIGNING_SECRET=test-secret-for-docker
+      - SLACK_BOT_TOKEN=xoxb-test-token
+      - OPENCODE_URL=http://localhost:9999
+    tmpfs:
+      - /tmp
+
+  # TypeScript type check
+  typecheck:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npx", "tsc", "--noEmit"]

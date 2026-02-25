@@ -14,7 +14,15 @@
     "lint": "tsc --noEmit",
     "e2e:slack": "tsx scripts/e2e-slack.ts",
     "e2e:test": "tsx scripts/e2e-test.ts",
-    "e2e:setup": "tsx scripts/e2e-setup.ts"
+    "e2e:setup": "tsx scripts/e2e-setup.ts",
+    "test": "tsx test/all.test.ts",
+    "test:unit": "tsx test/unit.test.ts",
+    "test:e2e": "tsx test/e2e.test.ts",
+    "test:docker": "tsx test/all.test.ts",
+    "docker:unit": "docker compose -f docker-compose.test.yml run --rm unit-tests",
+    "docker:e2e": "docker compose -f docker-compose.test.yml run --rm e2e-tests",
+    "docker:all": "docker compose -f docker-compose.test.yml run --rm all-tests",
+    "docker:typecheck": "docker compose -f docker-compose.test.yml run --rm typecheck"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -35,7 +35,7 @@ if command -v node &>/dev/null; then
   echo -e "${GREEN}$NODE_VERSION${NC}"
 else
   echo -e "${RED}NOT FOUND${NC}"
-  echo "  Install Node.js 20+ from https://nodejs.org"
+  echo "  Install Node.js 18+ from https://nodejs.org"
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -58,8 +58,8 @@ if command -v ngrok &>/dev/null; then
   echo -e "${GREEN}installed${NC}"
 else
   echo -e "${YELLOW}NOT FOUND (optional)${NC}"
-  echo "  Install ngrok for Slack E2E: https://ngrok.com/download"
-  echo "  Or use any other tunnel (e.g. cloudflared)"
+  echo "  Install ngrok for local dev: https://ngrok.com/download"
+  echo "  Or use any public URL (Cloudflare Tunnel, server IP, etc.)"
 fi
 
 # ── Check OpenCode ───────────────────────────────────────────────────────────
@@ -109,13 +109,8 @@ SLACK_SIGNING_SECRET=your-signing-secret
 SLACK_APP_ID=
 SLACK_CONFIG_REFRESH_TOKEN=
 
-# ── Test Channel ─────────────────────────────────────────
-# Slack channel ID to use for E2E tests (NOT #general!)
-SLACK_TEST_CHANNEL=C0AG3PJLCHH
-
 # ── Server Settings ──────────────────────────────────────
-CHANNELS_PORT=3456
-CHANNELS_DB_PATH=/tmp/e2e-channels-test.db
+PORT=3456
 ENVEOF
 
   echo -e "${GREEN}Created .env.test${NC}"
@@ -138,7 +133,7 @@ echo ""
 echo "  Next steps:"
 echo "    1. Fill in your Slack credentials in .env.test"
 echo "    2. Start OpenCode:  opencode serve --port 1707"
-echo "    3. Start ngrok:     ngrok http 3456"
+echo "    3. Expose port:     ngrok http 3456  (or use any public URL)"
 echo "    4. Run E2E:         pnpm e2e:slack"
 echo ""
 echo "  Run unit tests:       pnpm test"

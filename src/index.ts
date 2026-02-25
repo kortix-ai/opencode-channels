@@ -5,7 +5,7 @@
  *   npx tsx src/index.ts
  *
  * Environment variables:
- *   OPENCODE_URL          — OpenCode server URL (default: http://localhost:8000)
+ *   OPENCODE_URL          — OpenCode server URL (default: http://localhost:1707)
  *   SLACK_BOT_TOKEN       — Slack bot token (xoxb-...)
  *   SLACK_SIGNING_SECRET  — Slack signing secret
  *   PORT                  — Webhook server port (default: 3456)

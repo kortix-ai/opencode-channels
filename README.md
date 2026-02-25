@@ -3,7 +3,7 @@
 Connect [OpenCode](https://github.com/anomalyco/opencode) to **Slack** as a chatbot. Built on the [Vercel Chat SDK](https://github.com/nichochar/chat) for native streaming, reactions, and slash commands.
 
 ```
-Slack @mention --> ngrok --> Chat SDK Webhook --> OpenCode (SSE) --> Streamed Response --> Slack
+Slack @mention --> Public URL --> Chat SDK Webhook --> OpenCode (SSE) --> Streamed Response --> Slack
 ```
 
 ## Quick Start
@@ -13,14 +13,24 @@ Slack @mention --> ngrok --> Chat SDK Webhook --> OpenCode (SSE) --> Streamed Re
 git clone https://github.com/kortix-ai/opencode-channels.git
 cd opencode-channels && pnpm install
 
-# 2. Start OpenCode (in your project directory)
+# 2. Create your Slack app (one-time, ~1 minute)
+#    → https://api.slack.com/apps → "Create New App" → "From a manifest"
+#    → Select your workspace, paste the contents of slack-manifest.yml
+#    → Click "Create" → "Install to Workspace" → "Allow"
+
+# 3. Copy tokens into .env.test
+cp .env.example .env.test
+#    → Bot Token (xoxb-...):  OAuth & Permissions page
+#    → Signing Secret:        Basic Information page
+
+# 4. Start OpenCode (in your project directory)
 opencode serve --port 1707
 
-# 3. Run the setup wizard
-npx tsx scripts/e2e-slack.ts
+# 5. Run the setup wizard
+pnpm e2e:slack
 ```
 
-The wizard walks you through everything: env vars, ngrok tunnel, Slack app manifest, and boots the bot with a smoke test.
+The wizard detects ngrok (or accepts `--url`), auto-updates the Slack app webhook URLs, boots the bot, and runs a smoke test. Then just `@mention` the bot in Slack.
 
 ## How It Works
 
@@ -69,72 +79,92 @@ Multi-turn conversations work automatically -- replies in a thread reuse the sam
 
 ## Setup
 
-### Prerequisites
+### Step 1: Create the Slack App
 
-- **Node.js** >= 18
-- **OpenCode** server running (`opencode serve --port 1707`)
-- **ngrok** or another tunnel for public webhooks
-- A **Slack app** with a Bot Token and Signing Secret
+We ship a [`slack-manifest.yml`](slack-manifest.yml) that pre-configures everything — scopes, events, slash commands, bot name. No manual checkbox clicking.
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **"Create New App"** → **"From a manifest"**
+2. Select your workspace
+3. Switch to the **YAML** tab, paste the contents of `slack-manifest.yml`
+4. Click **"Create"** → **"Install to Workspace"** → **"Allow"**
+
+### Step 2: Copy Tokens
+
+From your [Slack app dashboard](https://api.slack.com/apps):
+
+| Token | Where to find it | Looks like |
+|-------|-------------------|------------|
+| **Bot Token** | OAuth & Permissions → Bot User OAuth Token | `xoxb-...` |
+| **Signing Secret** | Basic Information → App Credentials → Signing Secret | hex string |
+
+Put them in `.env.test`:
+
+```bash
+cp .env.example .env.test
+# Edit .env.test with your two tokens
+```
+
+### Step 3: Run
+
+```bash
+# Terminal 1 — OpenCode server
+opencode serve --port 1707
+
+# Terminal 2 — Bot (the wizard handles the rest)
+pnpm e2e:slack
+```
+
+The wizard will:
+- Detect ngrok or prompt for your public URL (`--url https://your-server.com`)
+- Auto-update the Slack app webhook URLs via the Manifest API (if `SLACK_APP_ID` + `SLACK_CONFIG_REFRESH_TOKEN` are set)
+- Boot the Chat SDK bot
+- Run a smoke test
+- Show a status dashboard
+
+**No ngrok?** Use `--url` to pass any publicly reachable URL:
+
+```bash
+pnpm e2e:slack --url https://bot.example.com
+```
+
+### Step 4 (optional): Auto-manifest for URL updates
+
+If you want the wizard to automatically update webhook URLs when your tunnel URL changes, add these to `.env.test`:
+
+| Token | Where to find it |
+|-------|-------------------|
+| `SLACK_APP_ID` | Basic Information → App ID (starts with `A0...`) |
+| `SLACK_CONFIG_REFRESH_TOKEN` | [api.slack.com/authentication/config-tokens](https://api.slack.com/authentication/config-tokens) → Generate Token |
+
+Without these, you'll need to manually update the Event Subscriptions URL in the Slack dashboard when your URL changes.
+
+### Production Deployment
+
+Skip the wizard entirely:
+
+```bash
+# Set env vars
+export SLACK_BOT_TOKEN=xoxb-...
+export SLACK_SIGNING_SECRET=...
+export OPENCODE_URL=http://localhost:1707
+
+# Update webhook URL in Slack dashboard to https://your-server.com/api/webhooks/slack
+# (Event Subscriptions, Slash Commands, and Interactivity all point to the same URL)
+
+# Start
+pnpm start
+```
 
 ### Environment Variables
 
-Create a `.env.test` file (or copy `.env.example`):
-
-```bash
-# Required
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_SIGNING_SECRET=your-signing-secret
-
-# Optional
-OPENCODE_URL=http://localhost:1707    # Default OpenCode server
-PORT=3456                              # Webhook server port
-
-# Optional — enables auto-manifest config
-SLACK_APP_ID=A0YOUR_APP_ID
-SLACK_CONFIG_REFRESH_TOKEN=xoxe-1-your-refresh-token
-```
-
-### Slack App Configuration
-
-**Automatic** (recommended): Set `SLACK_APP_ID` and `SLACK_CONFIG_REFRESH_TOKEN`. The setup wizard and bot auto-configure all URLs via the Slack Manifest API. The refresh token is single-use and auto-rotated.
-
-**Manual**: Set these URLs in your [Slack app dashboard](https://api.slack.com/apps):
-
-- **Event Subscriptions**: `https://<tunnel>/api/webhooks/slack`
-- **Slash Commands**: `/oc` and `/opencode` pointing to `https://<tunnel>/api/webhooks/slack`
-- **Interactivity**: `https://<tunnel>/api/webhooks/slack`
-
-All routes point to the same endpoint -- the Chat SDK handles routing internally.
-
-**Required Bot Token Scopes**: `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`, `chat:write.public`, `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `reactions:read`, `reactions:write`, `users:read`
-
-**Required Event Subscriptions**: `app_mention`, `message.channels`, `message.groups`, `message.im`, `message.mpim`, `reaction_added`
-
-## Setup Wizard
-
-The interactive wizard handles the full setup:
-
-```bash
-npx tsx scripts/e2e-slack.ts [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--url <url>` | Use a specific public URL (skip ngrok detection) |
-| `--port <port>` | Use a specific port (default: 3456) |
-| `--skip-ngrok` | Don't auto-detect ngrok, prompt for URL |
-| `--skip-manifest` | Don't auto-update the Slack app manifest |
-| `--help` | Show help |
-
-The wizard:
-1. Checks prerequisites (Node.js, tsx)
-2. Loads/prompts for environment variables
-3. Verifies OpenCode server connectivity
-4. Detects or starts ngrok (or accepts a manual URL)
-5. Auto-configures the Slack app manifest
-6. Boots the Chat SDK bot
-7. Runs a smoke test (health + webhook verification)
-8. Shows a status dashboard
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SLACK_BOT_TOKEN` | Yes | — | Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_SIGNING_SECRET` | Yes | — | Slack app signing secret |
+| `OPENCODE_URL` | No | `http://localhost:1707` | OpenCode server URL |
+| `PORT` | No | `3456` | Webhook server port |
+| `SLACK_APP_ID` | No | — | Enables auto-manifest URL updates |
+| `SLACK_CONFIG_REFRESH_TOKEN` | No | — | Enables auto-manifest URL updates |
 
 ## Development
 
@@ -143,10 +173,18 @@ pnpm typecheck       # TypeScript type checking
 pnpm dev             # Dev server with watch mode
 pnpm start           # Production start
 
-# E2E testing
-pnpm e2e:test        # 28 automated tests (webhook, security, sessions)
-pnpm e2e:setup       # 38 full lifecycle tests (boot, shutdown, reboot)
-pnpm e2e:slack       # Interactive setup wizard + live Slack testing
+# Tests (fully isolated, no credentials needed)
+pnpm test            # All tests (unit + E2E)
+pnpm test:unit       # 17 unit tests
+pnpm test:e2e        # 27 E2E tests (mock OpenCode + mock Slack + real bot)
+
+# Docker (CI-ready, hermetic)
+pnpm docker:all      # Build + run all tests in Docker
+pnpm docker:typecheck # TypeScript check in Docker
+
+# Live Slack testing (requires credentials + public URL)
+pnpm e2e:slack       # Interactive setup wizard for live Slack testing
+pnpm e2e:test        # Automated live E2E tests
 ```
 
 ## Architecture
@@ -154,15 +192,20 @@ pnpm e2e:slack       # Interactive setup wizard + live Slack testing
 ```
 opencode-channels/
   src/
-    bot.ts          # Chat SDK bot — handlers, UX, commands (~465 lines)
-    opencode.ts     # OpenCode HTTP/SSE client, promptStream() (~370 lines)
-    sessions.ts     # Thread→Session mapping, per-thread/per-message (~83 lines)
-    server.ts       # Hono webhook server + legacy routes (~88 lines)
-    index.ts        # Entry point, start() + CLI auto-start (~58 lines)
+    bot.ts          # Chat SDK bot — handlers, UX, commands
+    opencode.ts     # OpenCode HTTP/SSE client, promptStream()
+    sessions.ts     # Thread→Session mapping, per-thread/per-message
+    server.ts       # Hono webhook server + legacy routes
+    index.ts        # Entry point, start() + CLI auto-start
+  test/
+    e2e.test.ts     # 27 isolated E2E tests (mock servers + real bot)
+    unit.test.ts    # 17 unit tests (modules in isolation)
+    mock-opencode.ts # Mock OpenCode server (HTTP + SSE)
+    mock-slack.ts   # Mock Slack API with call recording
+    all.test.ts     # Sequential runner for all suites
   scripts/
-    e2e-slack.ts    # Interactive setup wizard
-    e2e-test.ts     # Automated E2E test suite (28 tests)
-    e2e-setup.ts    # Full lifecycle test suite (38 tests)
+    e2e-slack.ts    # Interactive setup wizard for live Slack testing
+    e2e-test.ts     # Automated live E2E tests
     fixtures/       # Slack webhook payload generators
 ```
 
@@ -173,7 +216,7 @@ opencode-channels/
 - **Edit-based streaming**: Posts a placeholder message and edits it with accumulated text every 600ms. The Chat SDK also supports native `thread.post(asyncIterable)` but the edit approach gives us control over the thinking indicator UX.
 - **Reaction lifecycle**: Hourglass while processing, checkmark on success, X on error.
 - **Per-thread sessions**: Each Slack thread maps to one OpenCode session for multi-turn context.
-- **5 flat files**: No monorepo, no packages directory, no build step for development (tsx runs TypeScript directly).
+- **5 source files**: No monorepo, no packages directory, no build step for development (tsx runs TypeScript directly).
 
 ## Programmatic Usage
 

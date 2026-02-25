@@ -43,7 +43,7 @@ let systemPrompt: string | undefined;
 // ─── Create Bot ─────────────────────────────────────────────────────────────
 
 export function createBot(config: BotConfig = {}) {
-  const opencodeUrl = config.opencodeUrl || process.env.OPENCODE_URL || 'http://localhost:8000';
+  const opencodeUrl = config.opencodeUrl || process.env.OPENCODE_URL || 'http://localhost:1707';
   const botName = config.botName || process.env.OPENCODE_BOT_NAME || 'opencode';
 
   client = new OpenCodeClient({ baseUrl: opencodeUrl });
