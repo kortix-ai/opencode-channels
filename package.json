@@ -1,0 +1,19 @@
+{
+  "name": "opencode-channels",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Standalone channel adapters for OpenCode — Slack, Discord, Telegram, and more",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --build --noEmit",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.1",
+    "@types/node": "^22.0.0",
+    "@types/better-sqlite3": "^7.6.8"
+  }
+}

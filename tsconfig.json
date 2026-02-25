@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/slack" },
+    { "path": "packages/telegram" },
+    { "path": "packages/discord" },
+    { "path": "packages/fs" },
+    { "path": "apps/cli" }
+  ]
+}
