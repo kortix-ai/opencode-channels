@@ -1,15 +1,3 @@
-/**
- * OpenCode HTTP/SSE client.
- *
- * Connects to a local OpenCode server and provides:
- *   - Session management (create, abort)
- *   - Streaming prompts via SSE → AsyncIterable<string>
- *   - Provider/model/agent listing
- *   - File downloads and git-status queries
- */
-
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 export interface OpenCodeClientConfig {
   baseUrl: string;
   headers?: Record<string, string>;
@@ -21,10 +9,30 @@ export interface FileOutput {
   content?: Buffer;
 }
 
-// ─── Tool / file extraction helpers ─────────────────────────────────────────
+export interface StreamEvent {
+  type: 'text' | 'busy' | 'done' | 'error' | 'permission' | 'file';
+  data?: string;
+  permission?: {
+    id: string;
+    tool: string;
+    description: string;
+  };
+  file?: {
+    name: string;
+    url: string;
+    mimeType?: string;
+  };
+}
 
-const FILE_PRODUCING_TOOLS = new Set(['show', 'show_user', 'show-user']);
+const FILE_PRODUCING_TOOLS = new Set(['show', 'show_user', 'show-user', 'oc-write']);
 const FILE_ITEM_TYPES = new Set(['file', 'image']);
+
+const DELIVERABLE_EXTS = new Set([
+  'md', 'txt', 'pdf', 'html', 'csv', 'json', 'xml',
+  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',
+  'mp3', 'mp4', 'wav',
+  'docx', 'xlsx', 'pptx',
+]);
 
 function guessImageMime(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -38,9 +46,31 @@ function guessImageMime(filename: string): string {
 function extractFileFromToolOutput(
   toolName: string,
   state: Record<string, unknown>,
-): { name: string; url: string; mimeType?: string } | null {
+): { name: string; url: string; mimeType?: string; content?: Buffer } | null {
   const input = state.input as Record<string, unknown> | undefined;
   const output = state.output as string | undefined;
+
+  // ── oc-write: extract written file with inline content ──
+  if (toolName === 'oc-write') {
+    const filePath = (input?.filePath as string) || (input?.file_path as string);
+    if (!filePath) return null;
+
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    if (!DELIVERABLE_EXTS.has(ext)) return null;
+
+    if (output) {
+      try {
+        const parsed = JSON.parse(output);
+        if (parsed.success === false) return null;
+      } catch { /* non-JSON output, assume success */ }
+    }
+
+    const name = filePath.split('/').pop() || 'file';
+    // Grab the content directly from the tool's input args — no download needed
+    const rawContent = input?.content as string | undefined;
+    const content = rawContent ? Buffer.from(rawContent, 'utf-8') : undefined;
+    return { name, url: filePath, content };
+  }
 
   if (toolName === 'show' || toolName === 'show_user' || toolName === 'show-user') {
     let filePath: string | undefined;
@@ -72,8 +102,6 @@ function extractFileFromToolOutput(
   return null;
 }
 
-// ─── OpenCodeClient ─────────────────────────────────────────────────────────
-
 export class OpenCodeClient {
   private readonly baseUrl: string;
   private readonly headers: Record<string, string>;
@@ -83,8 +111,6 @@ export class OpenCodeClient {
     this.headers = { 'Content-Type': 'application/json', ...config.headers };
   }
 
-  // ── Health ────────────────────────────────────────────────────────────
-
   async isReady(): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/global/health`, {
@@ -93,8 +119,6 @@ export class OpenCodeClient {
       return res.ok;
     } catch { return false; }
   }
-
-  // ── Sessions ──────────────────────────────────────────────────────────
 
   async createSession(agentName?: string): Promise<string> {
     const body: Record<string, unknown> = {};
@@ -118,14 +142,6 @@ export class OpenCodeClient {
     } catch { /* swallow */ }
   }
 
-  // ── Streaming prompt → AsyncIterable<string> ─────────────────────────
-
-  /**
-   * Send a prompt and return an async iterable of text deltas.
-   * This is the core bridge between OpenCode SSE and Chat SDK's streaming.
-   *
-   * Also collects file outputs detected during the stream.
-   */
   async *promptStream(
     sessionId: string,
     content: string,
@@ -140,7 +156,6 @@ export class OpenCodeClient {
     const timeout = setTimeout(() => controller.abort(), 300_000);
 
     try {
-      // 1. Connect SSE
       const sseHeaders: Record<string, string> = { Accept: 'text/event-stream' };
       for (const [k, v] of Object.entries(this.headers)) {
         if (k.toLowerCase() !== 'content-type') sseHeaders[k] = v;
@@ -150,7 +165,6 @@ export class OpenCodeClient {
       });
       if (!sseRes.ok || !sseRes.body) throw new Error(`SSE connect failed: ${sseRes.status}`);
 
-      // 2. Build prompt body
       const parts: Array<Record<string, unknown>> = [{ type: 'text', text: content }];
       if (options?.files) {
         for (const fp of options.files) {
@@ -161,14 +175,12 @@ export class OpenCodeClient {
       if (options?.agentName) promptBody.agent = options.agentName;
       if (options?.model) promptBody.model = options.model;
 
-      // 3. Fire prompt async
       const promptRes = await fetch(`${this.baseUrl}/session/${sessionId}/prompt_async`, {
         method: 'POST', headers: this.headers,
         body: JSON.stringify(promptBody), signal: controller.signal,
       });
       if (!promptRes.ok) throw new Error(`Prompt failed: ${promptRes.status} ${await promptRes.text()}`);
 
-      // 4. Parse SSE
       const reader = sseRes.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -201,19 +213,16 @@ export class OpenCodeClient {
             || ((props.info as Record<string, unknown>)?.sessionID as string);
           if (sid && sid !== sessionId) continue;
 
-          // Track assistant messages
           if (evt === 'message.updated') {
             const info = (props.info || {}) as Record<string, unknown>;
             if (info.role === 'assistant') assistantMsgIds.add(info.id as string);
           }
 
-          // Text deltas
           if (evt === 'message.part.delta') {
             const delta = props.delta as string;
             if (delta) { gotText = true; sawBusy = true; yield delta; }
           }
 
-          // Part updates (text fallback, files, tools)
           if (evt === 'message.part.updated') {
             const part = (props.part || {}) as Record<string, unknown>;
             const delta = props.delta as string;
@@ -237,22 +246,19 @@ export class OpenCodeClient {
                 processedToolCalls.add(callID);
                 const fileEvent = extractFileFromToolOutput(toolName, state);
                 if (fileEvent && options?.collectedFiles) {
-                  options.collectedFiles.push({ name: fileEvent.name, path: fileEvent.url });
+                  options.collectedFiles.push({ name: fileEvent.name, path: fileEvent.url, content: fileEvent.content });
                 }
               }
             }
           }
 
-          // Session status
           if (evt === 'session.status') {
             const status = ((props.status as Record<string, unknown>)?.type as string);
             if (status === 'busy') sawBusy = true;
           }
 
-          // Done
           if (evt === 'session.idle' && (sawBusy || gotText)) return;
 
-          // Error
           if (evt === 'session.error') {
             const err = ((props.error as Record<string, unknown>)?.data as Record<string, unknown>)?.message as string;
             throw new Error(err || 'Agent error');
@@ -265,7 +271,171 @@ export class OpenCodeClient {
     }
   }
 
-  // ── Providers ─────────────────────────────────────────────────────────
+  async *promptStreamEvents(
+    sessionId: string,
+    content: string,
+    options?: {
+      agentName?: string;
+      model?: { providerID: string; modelID: string };
+      files?: Array<{ type: 'file'; mime: string; url: string; filename?: string }>;
+    },
+  ): AsyncGenerator<StreamEvent> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 300_000);
+
+    try {
+      const sseHeaders: Record<string, string> = { Accept: 'text/event-stream' };
+      for (const [k, v] of Object.entries(this.headers)) {
+        if (k.toLowerCase() !== 'content-type') sseHeaders[k] = v;
+      }
+      const sseRes = await fetch(`${this.baseUrl}/event`, {
+        method: 'GET', headers: sseHeaders, signal: controller.signal,
+      });
+      if (!sseRes.ok || !sseRes.body) throw new Error(`SSE connect failed: ${sseRes.status}`);
+
+      const parts: Array<Record<string, unknown>> = [{ type: 'text', text: content }];
+      if (options?.files) {
+        for (const fp of options.files) {
+          parts.push({ type: 'file', mime: fp.mime, url: fp.url, filename: fp.filename });
+        }
+      }
+      const promptBody: Record<string, unknown> = { parts };
+      if (options?.agentName) promptBody.agent = options.agentName;
+      if (options?.model) promptBody.model = options.model;
+
+      const promptRes = await fetch(`${this.baseUrl}/session/${sessionId}/prompt_async`, {
+        method: 'POST', headers: this.headers,
+        body: JSON.stringify(promptBody), signal: controller.signal,
+      });
+      if (!promptRes.ok) throw new Error(`Prompt failed: ${promptRes.status} ${await promptRes.text()}`);
+
+      const reader = sseRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const assistantMsgIds = new Set<string>();
+      const processedToolCalls = new Set<string>();
+      let sawBusy = false;
+      let gotText = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        while (buffer.includes('\n')) {
+          const idx = buffer.indexOf('\n');
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line.startsWith('data:')) continue;
+
+          const dataStr = line.slice(5).trim();
+          if (!dataStr) continue;
+
+          let data: Record<string, unknown>;
+          try { data = JSON.parse(dataStr); } catch { continue; }
+
+          const evt = data.type as string;
+          const props = (data.properties || {}) as Record<string, unknown>;
+          const sid = (props.sessionID as string)
+            || ((props.part as Record<string, unknown>)?.sessionID as string)
+            || ((props.info as Record<string, unknown>)?.sessionID as string);
+          if (sid && sid !== sessionId) continue;
+
+          if (evt === 'message.updated') {
+            const info = (props.info || {}) as Record<string, unknown>;
+            if (info.role === 'assistant') assistantMsgIds.add(info.id as string);
+          }
+
+          if (evt === 'message.part.updated') {
+            const part = (props.part || {}) as Record<string, unknown>;
+            const delta = props.delta as string;
+            const msgId = part.messageID as string;
+            if (msgId && !assistantMsgIds.has(msgId)) continue;
+
+            if (part.type === 'text' && delta) {
+              gotText = true;
+              sawBusy = true;
+              yield { type: 'text', data: delta };
+            }
+
+            if (part.type === 'file') {
+              yield {
+                type: 'file',
+                file: {
+                  name: (part.filename as string) || 'file',
+                  url: (part.url as string) || '',
+                  mimeType: part.mimeType as string | undefined,
+                },
+              };
+            }
+
+            if (part.type === 'tool') {
+              const toolName = part.tool as string;
+              const callID = (part.callID || part.id) as string;
+              const state = part.state as Record<string, unknown> | undefined;
+              if (FILE_PRODUCING_TOOLS.has(toolName) && state?.status === 'completed' && callID && !processedToolCalls.has(callID)) {
+                processedToolCalls.add(callID);
+                const fileEvent = extractFileFromToolOutput(toolName, state);
+                if (fileEvent) {
+                  yield { type: 'file', file: fileEvent };
+                }
+              }
+            }
+          }
+
+          if (evt === 'permission.asked' || evt === 'permission.requested') {
+            const permProps = props as Record<string, unknown>;
+            yield {
+              type: 'permission',
+              permission: {
+                id: (permProps.id as string) || (permProps.requestID as string) || '',
+                tool: (permProps.tool as string) || (permProps.toolName as string) || 'unknown',
+                description: (permProps.description as string) || (permProps.message as string) || '',
+              },
+            };
+          }
+
+          if (evt === 'session.status') {
+            const status = ((props.status as Record<string, unknown>)?.type as string);
+            if (status === 'busy') {
+              sawBusy = true;
+              yield { type: 'busy' };
+            }
+          }
+
+          if (evt === 'session.idle' && (sawBusy || gotText)) {
+            yield { type: 'done' };
+            return;
+          }
+
+          if (evt === 'session.error') {
+            const err = ((props.error as Record<string, unknown>)?.data as Record<string, unknown>)?.message as string;
+            yield { type: 'error', data: err || 'unknown error' };
+            return;
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
+    }
+  }
+
+  async replyPermission(permissionId: string, approved: boolean): Promise<void> {
+    try {
+      const res = await fetch(`${this.baseUrl}/permission/${permissionId}/reply`, {
+        method: 'POST', headers: this.headers,
+        body: JSON.stringify({ approved }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[OpenCodeClient] Permission reply failed: ${res.status} ${errText}`);
+      }
+    } catch (err) {
+      console.error('[OpenCodeClient] Permission reply error:', err);
+    }
+  }
 
   async listProviders(): Promise<Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>> {
     try {
@@ -287,9 +457,7 @@ export class OpenCodeClient {
     } catch { return []; }
   }
 
-  // ── Agents ────────────────────────────────────────────────────────────
-
-  async listAgents(): Promise<Array<{ name: string; description?: string }>> {
+  async listAgents(): Promise<Array<{ name: string; description?: string; mode?: string }>> {
     try {
       const res = await fetch(`${this.baseUrl}/agent`, {
         headers: this.headers, signal: AbortSignal.timeout(10_000),
@@ -299,12 +467,10 @@ export class OpenCodeClient {
       const agents: unknown[] = Array.isArray(data) ? data : Object.values(data as Record<string, unknown>);
       return agents.map((a: unknown) => {
         const agent = a as Record<string, unknown>;
-        return { name: (agent.name as string) || '', description: agent.description as string | undefined };
+        return { name: (agent.name as string) || '', description: agent.description as string | undefined, mode: agent.mode as string | undefined };
       });
     } catch { return []; }
   }
-
-  // ── Files ─────────────────────────────────────────────────────────────
 
   async getModifiedFiles(): Promise<FileOutput[]> {
     try {
@@ -332,16 +498,20 @@ export class OpenCodeClient {
   async downloadFileByPath(filePath: string): Promise<Buffer | null> {
     try {
       const params = new URLSearchParams({ path: filePath });
-      const res = await fetch(`${this.baseUrl}/file/content?${params}`, {
+      const url = `${this.baseUrl}/file/content?${params}`;
+      const res = await fetch(url, {
         headers: this.headers, signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) return null;
-      const data = (await res.json()) as { content: string; encoding?: string };
-      return data.encoding === 'base64' ? Buffer.from(data.content, 'base64') : Buffer.from(data.content, 'utf-8');
-    } catch { return null; }
+      const data = (await res.json()) as Record<string, unknown>;
+      const content = data.content as string | undefined;
+      if (!content) return null;
+      return data.encoding === 'base64' ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf-8');
+    } catch (err) {
+      console.error('[opencode-channels] downloadFileByPath error:', err);
+      return null;
+    }
   }
-
-  // ── Session diff ──────────────────────────────────────────────────────
 
   async getSessionDiff(sessionId: string): Promise<string> {
     try {
@@ -354,8 +524,6 @@ export class OpenCodeClient {
         : (data as Record<string, unknown>).diff as string || (data as Record<string, unknown>).content as string || JSON.stringify(data, null, 2);
     } catch { return ''; }
   }
-
-  // ── Session sharing ───────────────────────────────────────────────────
 
   async shareSession(sessionId: string): Promise<string | null> {
     try {

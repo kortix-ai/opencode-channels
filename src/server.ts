@@ -1,14 +1,9 @@
-/**
- * Webhook server — Hono-based HTTP server that delegates to Chat SDK.
- *
- * Routes:
- *   POST /api/webhooks/slack  — Slack Events API + commands + interactivity
- *   GET  /health              — Health check
- */
-
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import type { Chat, Adapter } from 'chat';
+
+import type { ChannelsService } from './service.js';
+import type { ReloadRequest } from './types.js';
+import { adapterModules } from './adapters/registry.js';
 
 export interface ServerConfig {
   port?: number;
@@ -16,7 +11,7 @@ export interface ServerConfig {
 }
 
 export function createServer(
-  bot: Chat<Record<string, Adapter>>,
+  service: ChannelsService,
   config: ServerConfig = {},
 ) {
   const port = config.port ?? (process.env.PORT ? Number(process.env.PORT) : 3456);
@@ -24,60 +19,52 @@ export function createServer(
 
   const app = new Hono();
 
-  // Health check
   app.get('/health', (c) =>
-    c.json({ ok: true, service: 'opencode-channels', adapters: ['slack'] }),
+    c.json({
+      ok: true,
+      service: 'opencode-channels',
+      adapters: service.activeAdapters,
+    }),
   );
 
-  // Slack webhooks — events, commands, interactivity all go through one route
-  app.post('/api/webhooks/slack', async (c) => {
-    const handler = bot.webhooks.slack;
-    if (!handler) {
-      return c.text('Slack adapter not configured', 404);
+  app.post('/reload', async (c) => {
+    try {
+      const body = await c.req.json() as ReloadRequest;
+      if (!body?.credentials) {
+        return c.json({ error: 'Missing credentials' }, 400);
+      }
+      const result = service.reload(body.credentials);
+      return c.json(result);
+    } catch (err) {
+      console.error('[opencode-channels] Reload failed:', err);
+      return c.json({ error: 'Reload failed' }, 500);
     }
-
-    // Chat SDK expects a standard Request object
-    return handler(c.req.raw, {
-      waitUntil: (task) => {
-        // In Node.js (non-serverless), just let it run
-        task.catch((err) => {
-          console.error('[opencode-channels] Background task failed:', err);
-        });
-      },
-    });
   });
 
-  // Legacy routes (for backwards compatibility with existing Slack app configs)
-  app.post('/slack/events', async (c) => {
-    const handler = bot.webhooks.slack;
-    if (!handler) return c.text('Slack adapter not configured', 404);
-    return handler(c.req.raw, {
-      waitUntil: (task) => { task.catch(console.error); },
-    });
-  });
+  for (const mod of adapterModules) {
+    app.post(`/api/webhooks/${mod.name}`, async (c) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handler = (service.bot as any)?.webhooks?.[mod.name];
+      if (!handler) {
+        return c.text(`${mod.name} adapter not configured`, 404);
+      }
 
-  app.post('/slack/commands', async (c) => {
-    const handler = bot.webhooks.slack;
-    if (!handler) return c.text('Slack adapter not configured', 404);
-    return handler(c.req.raw, {
-      waitUntil: (task) => { task.catch(console.error); },
+      return handler(c.req.raw, {
+        waitUntil: (task: Promise<unknown>) => {
+          task.catch((err: unknown) => {
+            console.error('[opencode-channels] Background task failed:', err);
+          });
+        },
+      });
     });
-  });
 
-  app.post('/slack/interactivity', async (c) => {
-    const handler = bot.webhooks.slack;
-    if (!handler) return c.text('Slack adapter not configured', 404);
-    return handler(c.req.raw, {
-      waitUntil: (task) => { task.catch(console.error); },
-    });
-  });
+    mod.registerRoutes?.(app, () => service.bot);
+  }
 
-  // Start — wrap in a promise so EADDRINUSE is caught gracefully
   const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     console.log(`[opencode-channels] Server listening on ${host}:${info.port}`);
   });
 
-  // Handle startup errors (EADDRINUSE, etc.)
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.error(

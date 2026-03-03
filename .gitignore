@@ -1,13 +1,1 @@
-node_modules/
-dist/
-.env
-.env.*
-!.env.example
-*.db
-*.db-shm
-*.db-wal
-*.sqlite
-*.tsbuildinfo
-.turbo/
-ngrok-url.txt
-slack-manifest.json
+node_modules

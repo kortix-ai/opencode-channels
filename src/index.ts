@@ -1,56 +1,47 @@
-/**
- * opencode-channels — Entry point.
- *
- * Usage:
- *   npx tsx src/index.ts
- *
- * Environment variables:
- *   OPENCODE_URL          — OpenCode server URL (default: http://localhost:1707)
- *   SLACK_BOT_TOKEN       — Slack bot token (xoxb-...)
- *   SLACK_SIGNING_SECRET  — Slack signing secret
- *   PORT                  — Webhook server port (default: 3456)
- */
-
 import { createBot, type BotConfig } from './bot.js';
 import { createServer, type ServerConfig } from './server.js';
+import { ChannelsService, type ChannelsServiceConfig } from './service.js';
 
 export { createBot, type BotConfig } from './bot.js';
+export { createChatInstance, readAdaptersFromEnv, type ChatInstanceDeps } from './bot.js';
 export { createServer, type ServerConfig } from './server.js';
-export { OpenCodeClient, type OpenCodeClientConfig, type FileOutput } from './opencode.js';
+export { ChannelsService, type ChannelsServiceConfig } from './service.js';
+export { OpenCodeClient, type OpenCodeClientConfig, type FileOutput, type StreamEvent } from './opencode.js';
 export { SessionManager, type SessionStrategy } from './sessions.js';
+export type { AdapterCredentials, AdapterModule, ReloadRequest, ReloadResult } from './types.js';
 
-/**
- * Start opencode-channels with default configuration.
- * Reads all config from environment variables.
- */
 export async function start(
   botConfig?: BotConfig,
   serverConfig?: ServerConfig,
 ) {
-  const { bot, client, sessions } = createBot(botConfig);
+  const service = new ChannelsService({
+    opencodeUrl: botConfig?.opencodeUrl,
+    botName: botConfig?.botName,
+    agentName: botConfig?.agentName,
+    systemPrompt: botConfig?.systemPrompt,
+    model: botConfig?.model,
+  });
 
-  // Verify OpenCode is reachable
-  const ready = await client.isReady();
+  const ready = await service.client.isReady();
   if (ready) {
     console.log(`[opencode-channels] OpenCode server is ready`);
   } else {
     console.warn(`[opencode-channels] OpenCode server not reachable — will retry on first message`);
   }
 
-  const server = createServer(bot, serverConfig);
+  const server = createServer(service, serverConfig);
 
-  // Periodic session cleanup
   const cleanupInterval = setInterval(() => {
-    sessions.cleanup();
+    service.sessions.cleanup();
   }, 5 * 60 * 1000);
   cleanupInterval.unref?.();
 
-  return { bot, client, server };
+  return { bot: service.bot, client: service.client, server, service };
 }
 
-// ── CLI entry point ─────────────────────────────────────────────────────────
-
-if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
+const entryFile = process.argv[1] ?? '';
+const isDirectRun = entryFile.includes('opencode-channels') && (entryFile.endsWith('index.ts') || entryFile.endsWith('index.js'));
+if (isDirectRun) {
   start().catch((err) => {
     console.error('[opencode-channels] Fatal:', err);
     process.exit(1);

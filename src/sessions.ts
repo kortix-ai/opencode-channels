@@ -1,11 +1,3 @@
-/**
- * Session manager — maps Chat SDK thread IDs to OpenCode session IDs.
- *
- * Strategies:
- *   - per-thread (default): One OpenCode session per Chat SDK thread
- *   - per-message: Fresh OpenCode session for every message
- */
-
 import { OpenCodeClient } from './opencode.js';
 
 export type SessionStrategy = 'per-thread' | 'per-message';
@@ -15,7 +7,7 @@ interface SessionEntry {
   lastUsedAt: number;
 }
 
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_TTL_MS = 30 * 60 * 1000;
 
 export class SessionManager {
   private readonly cache = new Map<string, SessionEntry>();
@@ -35,10 +27,28 @@ export class SessionManager {
     this.agentName = agentName;
   }
 
-  /**
-   * Resolve an OpenCode session ID for a given Chat SDK thread.
-   * Creates a new OpenCode session if needed.
-   */
+  getAgent(): string | undefined {
+    return this.agentName;
+  }
+
+  get size(): number {
+    return this.cache.size;
+  }
+
+  clearAll(): void {
+    this.cache.clear();
+  }
+
+  lastSessionId(): string | undefined {
+    let latest: SessionEntry | undefined;
+    for (const entry of this.cache.values()) {
+      if (!latest || entry.lastUsedAt > latest.lastUsedAt) {
+        latest = entry;
+      }
+    }
+    return latest?.opencodeSessionId;
+  }
+
   async resolve(threadId: string, client: OpenCodeClient): Promise<string> {
     if (this.strategy === 'per-message') {
       return client.createSession(this.agentName);
@@ -55,23 +65,14 @@ export class SessionManager {
     return sessionId;
   }
 
-  /**
-   * Invalidate the session for a thread (e.g. on !reset).
-   */
   invalidate(threadId: string): void {
     this.cache.delete(threadId);
   }
 
-  /**
-   * Get the current session ID for a thread without creating one.
-   */
   get(threadId: string): string | undefined {
     return this.cache.get(threadId)?.opencodeSessionId;
   }
 
-  /**
-   * Evict stale sessions from the cache.
-   */
   cleanup(): void {
     const now = Date.now();
     for (const [key, entry] of this.cache) {
