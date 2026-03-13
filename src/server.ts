@@ -33,13 +33,21 @@ export function createServer(
       if (!body?.credentials) {
         return c.json({ error: 'Missing credentials' }, 400);
       }
-      const result = service.reload(body.credentials);
+      const result = await service.reload(body.credentials);
       return c.json(result);
     } catch (err) {
       console.error('[opencode-channels] Reload failed:', err);
       return c.json({ error: 'Reload failed' }, 500);
     }
   });
+
+  const waitUntilOpts = {
+    waitUntil: (task: Promise<unknown>) => {
+      task.catch((err: unknown) => {
+        console.error('[opencode-channels] Background task failed:', err);
+      });
+    },
+  };
 
   for (const mod of adapterModules) {
     app.post(`/api/webhooks/${mod.name}`, async (c) => {
@@ -49,14 +57,20 @@ export function createServer(
         return c.text(`${mod.name} adapter not configured`, 404);
       }
 
-      return handler(c.req.raw, {
-        waitUntil: (task: Promise<unknown>) => {
-          task.catch((err: unknown) => {
-            console.error('[opencode-channels] Background task failed:', err);
-          });
-        },
-      });
+      return handler(c.req.raw, waitUntilOpts);
     });
+
+    // Telegram needs a GET handler for webhook verification
+    if (mod.name === 'telegram') {
+      app.get(`/api/webhooks/${mod.name}`, async (c) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const adapter = (service.bot as any)?.adapters?.[mod.name];
+        if (!adapter?.handleWebhook) {
+          return c.text(`${mod.name} adapter not configured`, 404);
+        }
+        return adapter.handleWebhook(c.req.raw, waitUntilOpts);
+      });
+    }
 
     mod.registerRoutes?.(app, () => service.bot);
   }

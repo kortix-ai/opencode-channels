@@ -22,6 +22,8 @@ export async function start(
     model: botConfig?.model,
   });
 
+  await service.init();
+
   const ready = await service.client.isReady();
   if (ready) {
     console.log(`[opencode-channels] OpenCode server is ready`);

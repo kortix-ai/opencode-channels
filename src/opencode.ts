@@ -10,7 +10,7 @@ export interface FileOutput {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'busy' | 'done' | 'error' | 'permission' | 'file';
+  type: 'text' | 'busy' | 'done' | 'error' | 'permission' | 'file' | 'tool';
   data?: string;
   permission?: {
     id: string;
@@ -21,6 +21,10 @@ export interface StreamEvent {
     name: string;
     url: string;
     mimeType?: string;
+  };
+  tool?: {
+    name: string;
+    status: 'running' | 'completed' | 'error';
   };
 }
 
@@ -292,6 +296,7 @@ export class OpenCodeClient {
         method: 'GET', headers: sseHeaders, signal: controller.signal,
       });
       if (!sseRes.ok || !sseRes.body) throw new Error(`SSE connect failed: ${sseRes.status}`);
+      console.log(`[opencode] promptStreamEvents: SSE connected for session ${sessionId}`);
 
       const parts: Array<Record<string, unknown>> = [{ type: 'text', text: content }];
       if (options?.files) {
@@ -307,7 +312,24 @@ export class OpenCodeClient {
         method: 'POST', headers: this.headers,
         body: JSON.stringify(promptBody), signal: controller.signal,
       });
-      if (!promptRes.ok) throw new Error(`Prompt failed: ${promptRes.status} ${await promptRes.text()}`);
+      if (!promptRes.ok) {
+        const errBody = await promptRes.text().catch(() => '');
+        throw new Error(`Prompt failed (${promptRes.status}): ${errBody || 'unknown error'}`);
+      }
+      // Check response body for errors (OpenCode may return { error: ... })
+      const promptResText = await promptRes.text().catch(() => '');
+      if (promptResText) {
+        try {
+          const parsed = JSON.parse(promptResText);
+          if (parsed.error) {
+            throw new Error(`Prompt rejected: ${typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error)}`);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith('Prompt rejected')) throw e;
+          // Not JSON or no error field — fine
+        }
+      }
+      console.log(`[opencode] promptStreamEvents: prompt sent, streaming events...`);
 
       const reader = sseRes.body.getReader();
       const decoder = new TextDecoder();
@@ -316,10 +338,28 @@ export class OpenCodeClient {
       const processedToolCalls = new Set<string>();
       let sawBusy = false;
       let gotText = false;
+      let promptSentAt = Date.now();
+
+      // Per-read timeout: if no SSE data for this long, bail out.
+      // Use a shorter timeout when we haven't seen any activity yet (likely a dead prompt).
+      const INITIAL_TIMEOUT_MS = 30_000;  // 30s to see first busy/text event
+      const ACTIVE_TIMEOUT_MS = 90_000;   // 90s between events once active
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const timeoutMs = (sawBusy || gotText) ? ACTIVE_TIMEOUT_MS : INITIAL_TIMEOUT_MS;
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs),
+        );
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (done) {
+          if (!gotText && !sawBusy) {
+            console.warn('[opencode] promptStreamEvents: timed out with no activity — agent may have failed silently');
+            yield { type: 'error' as const, data: 'Agent did not respond (timed out). The agent or model may be unavailable.' };
+            return;
+          }
+          break;
+        }
         buffer += decoder.decode(value, { stream: true });
 
         while (buffer.includes('\n')) {
@@ -341,22 +381,34 @@ export class OpenCodeClient {
             || ((props.info as Record<string, unknown>)?.sessionID as string);
           if (sid && sid !== sessionId) continue;
 
+          // Debug: log every non-delta event type for our session
+          if (evt !== 'message.part.delta') {
+            const partType = (props.part as Record<string, unknown>)?.type as string || '';
+            const toolName = (props.part as Record<string, unknown>)?.tool as string || '';
+            const statusType = ((props.status as Record<string, unknown>)?.type as string) || '';
+            console.log(`[opencode] SSE: ${evt}${partType ? ` part=${partType}` : ''}${toolName ? ` tool=${toolName}` : ''}${statusType ? ` status=${statusType}` : ''}`);
+          }
+
           if (evt === 'message.updated') {
             const info = (props.info || {}) as Record<string, unknown>;
             if (info.role === 'assistant') assistantMsgIds.add(info.id as string);
           }
 
-          if (evt === 'message.part.updated') {
-            const part = (props.part || {}) as Record<string, unknown>;
+          // Handle text deltas — these arrive as message.part.delta events
+          // (NOT message.part.updated which only has the full accumulated text).
+          if (evt === 'message.part.delta') {
             const delta = props.delta as string;
-            const msgId = part.messageID as string;
-            if (msgId && !assistantMsgIds.has(msgId)) continue;
-
-            if (part.type === 'text' && delta) {
+            if (delta) {
               gotText = true;
               sawBusy = true;
               yield { type: 'text', data: delta };
             }
+          }
+
+          if (evt === 'message.part.updated') {
+            const part = (props.part || {}) as Record<string, unknown>;
+            const msgId = part.messageID as string;
+            if (msgId && !assistantMsgIds.has(msgId)) continue;
 
             if (part.type === 'file') {
               yield {
@@ -373,12 +425,34 @@ export class OpenCodeClient {
               const toolName = part.tool as string;
               const callID = (part.callID || part.id) as string;
               const state = part.state as Record<string, unknown> | undefined;
-              if (FILE_PRODUCING_TOOLS.has(toolName) && state?.status === 'completed' && callID && !processedToolCalls.has(callID)) {
-                processedToolCalls.add(callID);
-                const fileEvent = extractFileFromToolOutput(toolName, state);
-                if (fileEvent) {
-                  yield { type: 'file', file: fileEvent };
+              const toolStatus = state?.status as string | undefined;
+
+              // Yield tool activity events so the UI can show progress
+              if (toolName && callID && !processedToolCalls.has(callID)) {
+                if (toolStatus === 'running' || toolStatus === 'pending') {
+                  yield { type: 'tool', tool: { name: toolName, status: 'running' } };
+                } else if (toolStatus === 'completed') {
+                  processedToolCalls.add(callID);
+                  yield { type: 'tool', tool: { name: toolName, status: 'completed' } };
+                  // Extract file if applicable
+                  if (FILE_PRODUCING_TOOLS.has(toolName)) {
+                    const fileEvent = extractFileFromToolOutput(toolName, state!);
+                    if (fileEvent) {
+                      yield { type: 'file', file: fileEvent };
+                    }
+                  }
+                } else if (toolStatus === 'error') {
+                  processedToolCalls.add(callID);
+                  yield { type: 'tool', tool: { name: toolName, status: 'error' } };
                 }
+              }
+            }
+
+            // step-start/step-finish parts indicate multi-step agent activity
+            if (part.type === 'step-start') {
+              const stepName = (part.step as string) || (part.name as string) || '';
+              if (stepName) {
+                yield { type: 'tool', tool: { name: stepName, status: 'running' } };
               }
             }
           }
@@ -403,9 +477,15 @@ export class OpenCodeClient {
             }
           }
 
-          if (evt === 'session.idle' && (sawBusy || gotText)) {
-            yield { type: 'done' };
-            return;
+          // session.idle means the agent finished. We guard against stale
+          // idle events that arrive right after SSE connect (from a previous
+          // prompt) by requiring at least 1s to have passed since we sent our
+          // prompt, OR that we've already seen activity (busy/text).
+          if (evt === 'session.idle') {
+            if (sawBusy || gotText || (Date.now() - promptSentAt > 1500)) {
+              yield { type: 'done' };
+              return;
+            }
           }
 
           if (evt === 'session.error') {
@@ -423,14 +503,18 @@ export class OpenCodeClient {
 
   async replyPermission(permissionId: string, approved: boolean): Promise<void> {
     try {
+      // OpenCode permission API expects: { reply: "once" | "always" | "reject" }
+      const reply = approved ? 'always' : 'reject';
       const res = await fetch(`${this.baseUrl}/permission/${permissionId}/reply`, {
         method: 'POST', headers: this.headers,
-        body: JSON.stringify({ approved }),
+        body: JSON.stringify({ reply }),
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) {
         const errText = await res.text();
         console.error(`[OpenCodeClient] Permission reply failed: ${res.status} ${errText}`);
+      } else {
+        console.log(`[opencode] Permission ${permissionId} replied: ${reply}`);
       }
     } catch (err) {
       console.error('[OpenCodeClient] Permission reply error:', err);

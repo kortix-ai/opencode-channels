@@ -5,7 +5,16 @@ import { SessionManager } from './sessions.js';
 import { createChatInstance, readAdaptersFromEnv } from './bot.js';
 import { adapterModules } from './adapters/registry.js';
 import type { AdapterCredentials } from './adapters/types.js';
+import type { TelegramDirectConfig } from './telegram-api.js';
 import type { ReloadResult } from './types.js';
+
+/** Build TelegramDirectConfig from env (or credentials) if available. */
+function buildTelegramConfig(credentials: AdapterCredentials): TelegramDirectConfig | undefined {
+  const botToken = (credentials.telegram as { botToken?: string } | undefined)?.botToken
+    ?? process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return undefined;
+  return { botToken, apiBaseUrl: process.env.TELEGRAM_API_BASE_URL };
+}
 
 export interface ChannelsServiceConfig {
   opencodeUrl?: string;
@@ -36,8 +45,11 @@ export class ChannelsService {
     this._currentModel = config.model;
     this._systemPrompt = config.systemPrompt;
     this._credentials = config.credentials ?? readAdaptersFromEnv();
+  }
 
-    this._bot = createChatInstance({
+  /** Initialize the bot (must be called after constructor). */
+  async init(): Promise<void> {
+    this._bot = await createChatInstance({
       credentials: this._credentials,
       client: this.client,
       sessions: this.sessions,
@@ -45,6 +57,7 @@ export class ChannelsService {
       setModel: (m) => { this._currentModel = m; },
       getSystemPrompt: () => this._systemPrompt,
       botName: this.botName,
+      telegramConfig: buildTelegramConfig(this._credentials),
     });
   }
 
@@ -69,7 +82,7 @@ export class ChannelsService {
     this._systemPrompt = prompt;
   }
 
-  reload(credentials: AdapterCredentials): ReloadResult {
+  async reload(credentials: AdapterCredentials): Promise<ReloadResult> {
     if (credentialsEqual(this._credentials, credentials)) {
       return {
         ok: true,
@@ -81,7 +94,7 @@ export class ChannelsService {
     console.log('[opencode-channels] Reloading with new credentials...');
     this._credentials = credentials;
 
-    this._bot = createChatInstance({
+    this._bot = await createChatInstance({
       credentials,
       client: this.client,
       sessions: this.sessions,
@@ -89,6 +102,7 @@ export class ChannelsService {
       setModel: (m) => { this._currentModel = m; },
       getSystemPrompt: () => this._systemPrompt,
       botName: this.botName,
+      telegramConfig: buildTelegramConfig(credentials),
     });
 
     console.log(`[opencode-channels] Reload complete. Active adapters: ${this.activeAdapters.join(', ') || 'none'}`);
