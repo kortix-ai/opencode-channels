@@ -8,7 +8,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "bin": {
-    "opencode-channels": "src/index.ts"
+    "opencode-channels": "src/index.ts",
+    "channels-send": "src/cli.ts"
   },
   "files": [
     "src/",

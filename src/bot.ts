@@ -116,6 +116,23 @@ export async function createChatInstance(deps: ChatInstanceDeps): Promise<Chat |
 
   const threadQueues = new Map<string, ThreadQueue>();
 
+  // Track which sessions have already received the channel context injection.
+  // We inject it once (first message) then never again — keeps tokens lean.
+  const contextInjectedSessions = new Set<string>();
+
+  /** Extract the bare platform-native ID from a Chat SDK thread ID.
+   *  e.g. "slack:C0AG3PJLCHH:1773444548.094629" → "C0AG3PJLCHH"
+   *       "telegram:123456789" → "123456789"
+   *       "discord:987654321" → "987654321"
+   */
+  function extractPlatformId(threadId: string): string {
+    const parts = threadId.split(':');
+    // slack:CHANNEL:THREAD_TS → CHANNEL (index 1)
+    // telegram:CHAT_ID        → CHAT_ID (index 1)
+    // discord:CHANNEL_ID      → CHANNEL_ID (index 1)
+    return parts[1] ?? threadId;
+  }
+
   /** Extract Telegram-specific info from a Chat SDK message's raw field. */
   function extractTelegramRaw(message: Message): { msgId?: number; replyContext?: string } {
     const raw = (message as unknown as { raw?: Record<string, unknown> }).raw;
@@ -253,6 +270,9 @@ export async function createChatInstance(deps: ChatInstanceDeps): Promise<Chat |
   ): Promise<void> {
     const useTelegramDirect = isTelegramThread(thread) && telegramConfig != null;
     const chatId = useTelegramDirect ? extractChatId(thread.id) : '';
+    const adapterName = (thread as unknown as { adapter?: { name: string } }).adapter?.name ?? 'unknown';
+    // The bare platform-native ID (channel ID for Slack, chat_id for Telegram)
+    const platformId = extractPlatformId(thread.id);
 
     // Show typing indicator
     try {
@@ -299,9 +319,21 @@ export async function createChatInstance(deps: ChatInstanceDeps): Promise<Chat |
     }
 
     const parts: string[] = [];
-    const sp = getSystemPrompt();
-    if (sp) parts.push(sp);
-    parts.push('[Response format: You are responding in a chat channel. Keep responses short and concise — brief paragraphs, short bullet points. Aim for the minimum words that fully answer the question.]');
+
+    // Inject full channel context only on the FIRST message of a session.
+    // After that it lives in the session history — no need to repeat it.
+    const isFirstMessage = !contextInjectedSessions.has(sessionId);
+    if (isFirstMessage) {
+      contextInjectedSessions.add(sessionId);
+      const sp = getSystemPrompt();
+      if (sp) parts.push(sp);
+      // Compact one-time context block
+      const sendTo = platformId || thread.id;
+      parts.push(
+        `[Channel: ${adapterName} | ID: ${sendTo} | Reply: curl -s -X POST http://localhost:3456/send -d '{"platform":"${adapterName}","to":"${sendTo}","text":"..."}']`,
+      );
+    }
+
     parts.push(replyPrefix + userText + fileContext);
     const prompt = parts.join('\n\n');
 
@@ -364,10 +396,10 @@ export async function createChatInstance(deps: ChatInstanceDeps): Promise<Chat |
       if (useTelegramDirect) {
         if (!telegramMsg) {
           // No streaming message yet — send new formatted message (as reply)
-          try { telegramMsg = await sendMessageDirect(telegramConfig!, chatId, markdown, replyToMsgId); } catch { /* non-fatal */ }
+          try { telegramMsg = await sendMessageDirect(telegramConfig!, chatId, markdown, replyToMsgId); } catch (err) { console.error('[opencode-channels] sendMessageDirect failed:', err instanceof Error ? err.message : err); }
         } else {
           // Edit existing streaming message with formatted version
-          try { await editMessageDirect(telegramConfig!, chatId, telegramMsg.messageId, markdown); } catch { /* non-fatal */ }
+          try { await editMessageDirect(telegramConfig!, chatId, telegramMsg.messageId, markdown); } catch (err) { console.error('[opencode-channels] editMessageDirect failed:', err instanceof Error ? err.message : err); }
         }
       } else {
         if (!responseMsg) {
