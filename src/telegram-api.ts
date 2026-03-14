@@ -261,6 +261,25 @@ async function sendSingleMessage(
     data = await response.json() as TgResult;
   }
 
+  // If reply-to message is not found (e.g. deleted or stale), retry without reply
+  if (!data.ok && data.description?.includes('replied') && replyToMessageId) {
+    const noReplyBase: Record<string, unknown> = { chat_id: chatId };
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...noReplyBase, text: formatted, parse_mode: 'MarkdownV2' }),
+    });
+    data = await response.json() as TgResult;
+    if (!data.ok && data.description?.includes('parse')) {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...noReplyBase, text: plainFallback }),
+      });
+      data = await response.json() as TgResult;
+    }
+  }
+
   // If still too long, truncate and retry
   if (!data.ok && data.description?.includes('too long')) {
     const truncated = plainFallback.slice(0, TELEGRAM_MAX_MSG_LEN - 20) + '\n\n_(truncated)_';
