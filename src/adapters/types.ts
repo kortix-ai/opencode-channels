@@ -20,4 +20,9 @@ export interface DiscordCredentials {
   mentionRoleIds?: string[];
 }
 
+export interface TelegramCredentials {
+  botToken: string;
+  secretToken?: string;
+}
+
 export type AdapterCredentials = Record<string, unknown>;
