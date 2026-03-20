@@ -58,6 +58,24 @@ export function createChatInstance(deps: ChatInstanceDeps): Chat | null {
 
   const { client, sessions, getModel, setModel, getSystemPrompt } = deps;
 
+  function mimeFromFilename(name?: string): string | undefined {
+    if (!name) return undefined;
+    const ext = name.split('.').pop()?.toLowerCase();
+    const map: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
+      pdf: 'application/pdf', json: 'application/json', xml: 'application/xml',
+      txt: 'text/plain', csv: 'text/csv', md: 'text/markdown',
+      html: 'text/html', css: 'text/css', js: 'text/javascript', ts: 'text/typescript',
+      py: 'text/x-python', rb: 'text/x-ruby', go: 'text/x-go', rs: 'text/x-rust',
+      java: 'text/x-java', c: 'text/x-c', cpp: 'text/x-c++', h: 'text/x-c',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+      mp4: 'video/mp4', webm: 'video/webm',
+      zip: 'application/zip', tar: 'application/x-tar', gz: 'application/gzip',
+    };
+    return ext ? map[ext] : undefined;
+  }
+
   async function convertAttachments(
     attachments: Attachment[],
   ): Promise<Array<{ type: 'file'; mime: string; url: string; filename?: string }>> {
@@ -72,7 +90,11 @@ export function createChatInstance(deps: ChatInstanceDeps): Chat | null {
         }
         if (!buffer || buffer.length === 0) continue;
 
-        const mime = att.mimeType || 'application/octet-stream';
+        const typeFallback: Record<string, string> = {
+          image: 'image/jpeg', video: 'video/mp4', audio: 'audio/mpeg',
+        };
+        const mime = att.mimeType || mimeFromFilename(att.name) || typeFallback[att.type] || 'application/octet-stream';
+        if (mime === 'application/octet-stream') continue;
         const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
         files.push({ type: 'file', mime, url: dataUrl, filename: att.name });
       } catch (err) {
