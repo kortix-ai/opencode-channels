@@ -1,10 +1,21 @@
+import type { Chat } from 'chat';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 
+import { readAdaptersFromEnv } from './bot.js';
 import type { ChannelsService } from './service.js';
 import type { ReloadRequest } from './types.js';
 import { adapterModules } from './adapters/registry.js';
 import { sendMessageDirect, type TelegramDirectConfig } from './telegram-api.js';
+
+type ServerInput = ChannelsService | Chat | Promise<Chat | null> | null;
+
+function isChannelsService(input: ServerInput): input is ChannelsService {
+  return !!input && typeof input === 'object'
+    && 'reload' in input
+    && 'sessions' in input
+    && 'activeAdapters' in input;
+}
 
 export interface ServerConfig {
   port?: number;
@@ -12,20 +23,42 @@ export interface ServerConfig {
 }
 
 export function createServer(
-  service: ChannelsService,
+  input: ServerInput,
   config: ServerConfig = {},
 ) {
   const port = config.port ?? (process.env.PORT ? Number(process.env.PORT) : 3456);
   const host = config.host ?? '0.0.0.0';
 
   const app = new Hono();
+  let legacyBotCache: Chat | null = null;
+
+  if (!isChannelsService(input) && input) {
+    Promise.resolve(input).then((bot) => {
+      legacyBotCache = bot;
+    }).catch((err) => {
+      console.error('[opencode-channels] Bot initialization failed:', err);
+    });
+  }
+
+  const getBot = () => (isChannelsService(input) ? input.bot : legacyBotCache);
+  const getAdapterNames = () => (isChannelsService(input)
+    ? input.activeAdapters
+    : Object.keys(readAdaptersFromEnv()));
+  const getActiveSessions = () => (isChannelsService(input) ? input.sessions.size : 0);
+  const getCredentials = () => (isChannelsService(input) ? input.credentials : readAdaptersFromEnv());
+  const resolveBot = async () => {
+    if (isChannelsService(input)) return input.bot;
+    if (legacyBotCache) return legacyBotCache;
+    legacyBotCache = await Promise.resolve(input);
+    return legacyBotCache;
+  };
 
   app.get('/health', (c) =>
     c.json({
       ok: true,
       service: 'opencode-channels',
-      adapters: service.activeAdapters,
-      activeSessions: service.sessions.size,
+      adapters: getAdapterNames(),
+      activeSessions: getActiveSessions(),
     }),
   );
 
@@ -47,12 +80,15 @@ export function createServer(
   });
 
   app.post('/reload', async (c) => {
+    if (!isChannelsService(input)) {
+      return c.json({ error: 'Reload requires a ChannelsService instance' }, 501);
+    }
     try {
       const body = await c.req.json() as ReloadRequest;
       if (!body?.credentials) {
         return c.json({ error: 'Missing credentials' }, 400);
       }
-      const result = await service.reload(body.credentials);
+      const result = await input.reload(body.credentials);
       return c.json(result);
     } catch (err) {
       console.error('[opencode-channels] Reload failed:', err);
@@ -65,6 +101,7 @@ export function createServer(
   // No CLI needed — just: curl -X POST localhost:3456/send -d '{"platform":"telegram","to":"123","text":"hi"}'
   app.post('/send', async (c) => {
     try {
+      const credentials = getCredentials();
       const body = await c.req.json() as {
         platform: string;
         to: string;
@@ -80,9 +117,10 @@ export function createServer(
       const platform = body.platform.toLowerCase();
 
       if (platform === 'slack') {
-        const token = (service.credentials.slack as { botToken?: string } | undefined)?.botToken
+        const token = (credentials.slack as { botToken?: string } | undefined)?.botToken
           ?? process.env.SLACK_BOT_TOKEN;
         if (!token) return c.json({ ok: false, error: 'SLACK_BOT_TOKEN not configured' }, 400);
+        const slackApiBase = process.env.SLACK_API_URL?.replace(/\/$/, '') || 'https://slack.com/api';
 
         const slackBody: Record<string, unknown> = {
           channel: body.to,
@@ -91,7 +129,7 @@ export function createServer(
         };
         if (body.threadTs) slackBody.thread_ts = body.threadTs;
 
-        const res = await fetch('https://slack.com/api/chat.postMessage', {
+        const res = await fetch(`${slackApiBase}/chat.postMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(slackBody),
@@ -103,7 +141,7 @@ export function createServer(
       }
 
       if (platform === 'telegram') {
-        const botToken = (service.credentials.telegram as { botToken?: string } | undefined)?.botToken
+        const botToken = (credentials.telegram as { botToken?: string } | undefined)?.botToken
           ?? process.env.TELEGRAM_BOT_TOKEN;
         if (!botToken) return c.json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not configured' }, 400);
 
@@ -120,12 +158,13 @@ export function createServer(
       }
 
       if (platform === 'discord') {
-        const token = (service.credentials.discord as { botToken?: string } | undefined)?.botToken
+        const token = (credentials.discord as { botToken?: string } | undefined)?.botToken
           ?? process.env.DISCORD_BOT_TOKEN;
         if (!token) return c.json({ ok: false, error: 'DISCORD_BOT_TOKEN not configured' }, 400);
+        const discordApiBase = process.env.DISCORD_API_BASE_URL?.replace(/\/$/, '') || 'https://discord.com/api/v10';
 
         const text = body.text.length > 2000 ? body.text.slice(0, 2000) : body.text;
-        const res = await fetch(`https://discord.com/api/v10/channels/${body.to}/messages`, {
+        const res = await fetch(`${discordApiBase}/channels/${body.to}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bot ${token}` },
           body: JSON.stringify({ content: text }),
@@ -152,8 +191,9 @@ export function createServer(
 
   for (const mod of adapterModules) {
     app.post(`/api/webhooks/${mod.name}`, async (c) => {
+      const bot = await resolveBot();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handler = (service.bot as any)?.webhooks?.[mod.name];
+      const handler = (bot as any)?.webhooks?.[mod.name];
       if (!handler) {
         return c.text(`${mod.name} adapter not configured`, 404);
       }
@@ -164,8 +204,9 @@ export function createServer(
     // Telegram needs a GET handler for webhook verification
     if (mod.name === 'telegram') {
       app.get(`/api/webhooks/${mod.name}`, async (c) => {
+        const bot = await resolveBot();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const adapter = (service.bot as any)?.adapters?.[mod.name];
+        const adapter = (bot as any)?.adapters?.[mod.name];
         if (!adapter?.handleWebhook) {
           return c.text(`${mod.name} adapter not configured`, 404);
         }
@@ -173,7 +214,7 @@ export function createServer(
       });
     }
 
-    mod.registerRoutes?.(app, () => service.bot);
+    mod.registerRoutes?.(app, getBot);
   }
 
   const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
