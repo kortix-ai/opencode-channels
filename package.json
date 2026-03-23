@@ -1,11 +1,21 @@
 {
-  "name": "opencode-channels",
-  "private": true,
-  "type": "module",
+  "name": "@kortix/opencode-channels",
   "version": "0.2.0",
-  "description": "Connect OpenCode to Slack, Discord, and more via the Chat SDK",
+  "description": "Connect OpenCode to Slack, Discord, and Telegram via the Chat SDK",
+  "license": "Elastic-2.0",
+  "private": false,
+  "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "opencode-channels": "src/index.ts",
+    "channels-send": "src/cli.ts"
+  },
+  "files": [
+    "src/",
+    "tsconfig.json",
+    "tsconfig.build.json"
+  ],
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
@@ -13,6 +23,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "e2e:slack": "tsx scripts/e2e-slack.ts",
+    "e2e:telegram": "tsx scripts/e2e-telegram.ts",
     "e2e:test": "tsx scripts/e2e-test.ts",
     "e2e:setup": "tsx scripts/e2e-setup.ts",
     "test": "tsx test/all.test.ts",
@@ -24,18 +35,21 @@
     "docker:all": "docker compose -f docker-compose.test.yml run --rm all-tests",
     "docker:typecheck": "docker compose -f docker-compose.test.yml run --rm typecheck"
   },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
-  },
   "dependencies": {
     "@chat-adapter/discord": "^4.20.2",
     "@chat-adapter/slack": "^4.20.2",
-    "@chat-adapter/telegram": "^4.20.2",
     "@chat-adapter/state-memory": "^4.20.2",
+    "@chat-adapter/telegram": "^4.20.2",
     "@hono/node-server": "^1.13.0",
     "chat": "^4.20.2",
-    "hono": "^4.12.0"
+    "hono": "^4.12.0",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -10,6 +10,7 @@
  */
 
 import * as net from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { createMockOpenCode } from './mock-opencode.js';
 import { createMockSlack } from './mock-slack.js';
 import { OpenCodeClient } from '../src/opencode.js';
@@ -35,6 +36,19 @@ async function runTest(name: string, fn: () => Promise<void>): Promise<void> {
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+async function waitFor(
+  fn: () => boolean,
+  timeoutMs = 5000,
+  intervalMs = 25,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (fn()) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
 async function getRandomPort(): Promise<number> {
@@ -187,6 +201,51 @@ async function testSessionAgentSwitch(): Promise<void> {
   assert(true, 'Agent switch should not throw');
 }
 
+async function testSessionPersistence(): Promise<void> {
+  const port = await getRandomPort();
+  let capturedAuth = '';
+  let capturedBody: Record<string, unknown> | null = null;
+
+  const server = createHttpServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/channels/internal/sessions/test-config') {
+      res.writeHead(404).end();
+      return;
+    }
+
+    capturedAuth = req.headers.authorization || '';
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      capturedBody = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(port, '0.0.0.0', () => resolve()));
+
+  try {
+    const mgr = new SessionManager('per-thread', 'coder', {
+      kortixApiUrl: `http://localhost:${port}`,
+      kortixToken: 'test-token',
+      channelConfigId: 'test-config',
+    });
+    const client = new OpenCodeClient({ baseUrl: `http://localhost:${ocPort}` });
+
+    const sessionId = await mgr.resolve('persist-thread', client);
+    await waitFor(() => capturedBody !== null);
+
+    assert(capturedAuth === 'Bearer test-token', `Wrong auth header: ${capturedAuth}`);
+    assert(capturedBody?.strategy_key === 'persist-thread', `Wrong strategy key: ${String(capturedBody?.strategy_key)}`);
+    assert(capturedBody?.session_id === sessionId, `Wrong session id: ${String(capturedBody?.session_id)}`);
+
+    const metadata = capturedBody?.metadata as Record<string, unknown> | undefined;
+    assert(metadata?.strategy === 'per-thread', `Wrong persisted strategy: ${String(metadata?.strategy)}`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 // ─── MockSlack tests ────────────────────────────────────────────────────────
 
 async function testMockSlackCallRecording(): Promise<void> {
@@ -262,6 +321,7 @@ async function main(): Promise<void> {
   await runTest('Cleanup', testSessionCleanup);
   await runTest('Strategy switch', testSessionStrategySwitch);
   await runTest('Agent switch', testSessionAgentSwitch);
+  await runTest('Persistence', testSessionPersistence);
 
   console.log('');
   console.log('── MockSlack ──');

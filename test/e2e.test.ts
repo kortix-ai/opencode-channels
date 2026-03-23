@@ -158,6 +158,7 @@ async function setup(): Promise<void> {
   // and calls slack.com. We override via env var that @slack/web-api respects.
   process.env.SLACK_BOT_TOKEN = 'xoxb-mock-token';
   process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
+  process.env.SLACK_API_URL = `http://localhost:${slackPort}/api`;
 
   // 4. Start the real bot pointing at mock OpenCode
   const { bot } = createBot({ opencodeUrl: `http://localhost:${ocPort}` });
@@ -208,6 +209,52 @@ async function testDmAccepted(): Promise<void> {
 async function testThreadedAccepted(): Promise<void> {
   const res = await sendWebhook(botUrl, makeMessage('reply', { threadTs: '1234.5678' }));
   assert(res.ok, `Threaded returned ${res.status}`);
+}
+
+async function testOutboundSendSlack(): Promise<void> {
+  mockSlack.clearCalls();
+  const res = await fetch(`${botUrl}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      platform: 'slack',
+      to: 'C_OUTBOUND',
+      text: 'proactive outbound test',
+    }),
+  });
+  assert(res.ok, `/send returned ${res.status}`);
+
+  const data = (await res.json()) as { ok: boolean; platform?: string; messageId?: string };
+  assert(data.ok === true, '/send response not ok');
+  assert(data.platform === 'slack', `Expected slack platform, got ${data.platform}`);
+
+  await waitFor(() => mockSlack.callCount('chat.postMessage') > 0);
+  const last = mockSlack.lastCallTo('chat.postMessage');
+  assert(last?.body.channel === 'C_OUTBOUND', `Wrong outbound channel: ${String(last?.body.channel)}`);
+  assert(last?.body.text === 'proactive outbound test', `Wrong outbound text: ${String(last?.body.text)}`);
+}
+
+async function testOutboundSendSlackThreadReply(): Promise<void> {
+  mockSlack.clearCalls();
+  const res = await fetch(`${botUrl}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      platform: 'slack',
+      to: 'C_THREAD',
+      text: 'thread reply test',
+      threadTs: '12345.6789',
+    }),
+  });
+  assert(res.ok, `/send threaded reply returned ${res.status}`);
+
+  const data = (await res.json()) as { ok: boolean; platform?: string };
+  assert(data.ok === true, 'Threaded /send response not ok');
+
+  await waitFor(() => mockSlack.callCount('chat.postMessage') > 0);
+  const last = mockSlack.lastCallTo('chat.postMessage');
+  assert(last?.body.channel === 'C_THREAD', `Wrong threaded channel: ${String(last?.body.channel)}`);
+  assert(last?.body.thread_ts === '12345.6789', `Wrong thread_ts: ${String(last?.body.thread_ts)}`);
 }
 
 async function testReactionAccepted(): Promise<void> {
@@ -405,6 +452,8 @@ async function main(): Promise<void> {
   await runTest('DM accepted', testDmAccepted);
   await runTest('Threaded message accepted', testThreadedAccepted);
   await runTest('Reaction accepted', testReactionAccepted);
+  await runTest('Outbound /send to Slack', testOutboundSendSlack);
+  await runTest('Outbound /send thread reply', testOutboundSendSlackThreadReply);
 
   // Phase 3
   console.log('');

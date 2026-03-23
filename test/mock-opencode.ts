@@ -34,6 +34,7 @@ export interface MockOpenCodeConfig {
 // ─── State ──────────────────────────────────────────────────────────────────
 
 let sessionCounter = 0;
+let promptCounter = 0;
 const activeSessions = new Map<string, { agent?: string }>();
 const sseClients: Set<ServerResponse> = new Set();
 let defaultResponse = 'Mock response from OpenCode.';
@@ -175,6 +176,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const promptMatch = path.match(/^\/session\/([^/]+)\/prompt_async$/);
   if (method === 'POST' && promptMatch) {
     const sessionId = promptMatch[1];
+    promptCounter++;
     res.writeHead(204);
     res.end();
 
@@ -245,6 +247,7 @@ export function createMockOpenCode(config: MockOpenCodeConfig) {
   chunkDelayMs = config.chunkDelayMs ?? 10;
   errorResponse = config.errorResponse;
   sessionCounter = 0;
+  promptCounter = 0;
   activeSessions.clear();
   sseClients.clear();
 
@@ -271,6 +274,8 @@ export function createMockOpenCode(config: MockOpenCodeConfig) {
     setError(error: string | undefined) { errorResponse = error; },
     /** Get the number of sessions created */
     get sessionCount() { return sessionCounter; },
+    /** Get the number of prompts sent */
+    get promptCount() { return promptCounter; },
     /** Get active SSE client count */
     get sseClientCount() { return sseClients.size; },
   };
