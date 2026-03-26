@@ -223,6 +223,9 @@ export class OpenCodeClient {
           }
 
           if (evt === 'message.part.delta') {
+            // Skip non-text part deltas (reasoning tokens, tool, step, etc.)
+            const partType = (props.part as Record<string, unknown>)?.type as string;
+            if (partType && partType !== 'text') continue;
             const delta = props.delta as string;
             if (delta) { gotText = true; sawBusy = true; yield delta; }
           }
@@ -396,7 +399,11 @@ export class OpenCodeClient {
 
           // Handle text deltas — these arrive as message.part.delta events
           // (NOT message.part.updated which only has the full accumulated text).
+          // IMPORTANT: Skip non-text part types (reasoning tokens, tool, step, etc.)
+          // to avoid leaking internal model reasoning into channel messages.
           if (evt === 'message.part.delta') {
+            const partType = (props.part as Record<string, unknown>)?.type as string;
+            if (partType && partType !== 'text') continue;
             const delta = props.delta as string;
             if (delta) {
               gotText = true;

@@ -246,6 +246,61 @@ async function testSessionPersistence(): Promise<void> {
   }
 }
 
+// ─── Reasoning token filtering tests ────────────────────────────────────────
+
+async function testPromptStreamFiltersReasoning(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: `http://localhost:${ocPort}` });
+  const sessionId = await client.createSession();
+  mockOC.setResponse('Actual response');
+  mockOC.setReasoning('Internal reasoning that should be hidden from the user');
+
+  let fullText = '';
+  for await (const delta of client.promptStream(sessionId, 'hello')) {
+    fullText += delta;
+  }
+
+  assert(fullText === 'Actual response', `Expected "Actual response", got "${fullText}"`);
+  assert(!fullText.includes('reasoning'), `Reasoning tokens leaked into response: "${fullText}"`);
+  assert(!fullText.includes('hidden'), `Reasoning tokens leaked into response: "${fullText}"`);
+
+  // Reset
+  mockOC.setReasoning(undefined);
+}
+
+async function testPromptStreamEventsFiltersReasoning(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: `http://localhost:${ocPort}` });
+  const sessionId = await client.createSession();
+  mockOC.setResponse('Visible output');
+  mockOC.setReasoning('The user wants X. Let me think about this carefully. I should respond with Y.');
+
+  let fullText = '';
+  for await (const event of client.promptStreamEvents(sessionId, 'hello')) {
+    if (event.type === 'text' && event.data) {
+      fullText += event.data;
+    }
+  }
+
+  assert(fullText === 'Visible output', `Expected "Visible output", got "${fullText}"`);
+  assert(!fullText.includes('think'), `Reasoning tokens leaked into events: "${fullText}"`);
+  assert(!fullText.includes('user wants'), `Reasoning tokens leaked into events: "${fullText}"`);
+
+  // Reset
+  mockOC.setReasoning(undefined);
+}
+
+async function testPromptStreamNoReasoningStillWorks(): Promise<void> {
+  const client = new OpenCodeClient({ baseUrl: `http://localhost:${ocPort}` });
+  const sessionId = await client.createSession();
+  mockOC.setResponse('Normal response');
+  mockOC.setReasoning(undefined);
+
+  let fullText = '';
+  for await (const delta of client.promptStream(sessionId, 'hello')) {
+    fullText += delta;
+  }
+  assert(fullText === 'Normal response', `Expected "Normal response", got "${fullText}"`);
+}
+
 // ─── MockSlack tests ────────────────────────────────────────────────────────
 
 async function testMockSlackCallRecording(): Promise<void> {
@@ -322,6 +377,12 @@ async function main(): Promise<void> {
   await runTest('Strategy switch', testSessionStrategySwitch);
   await runTest('Agent switch', testSessionAgentSwitch);
   await runTest('Persistence', testSessionPersistence);
+
+  console.log('');
+  console.log('── Reasoning Token Filtering ──');
+  await runTest('promptStream filters reasoning tokens', testPromptStreamFiltersReasoning);
+  await runTest('promptStreamEvents filters reasoning tokens', testPromptStreamEventsFiltersReasoning);
+  await runTest('promptStream works without reasoning', testPromptStreamNoReasoningStillWorks);
 
   console.log('');
   console.log('── MockSlack ──');

@@ -40,6 +40,7 @@ const sseClients: Set<ServerResponse> = new Set();
 let defaultResponse = 'Mock response from OpenCode.';
 let chunkDelayMs = 10;
 let errorResponse: string | undefined;
+let reasoningText: string | undefined;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,33 @@ async function streamResponse(sessionId: string, text: string): Promise<void> {
 
   // session.busy — use session.status so the client sets sawBusy=true
   sendSSE({ type: 'session.status', properties: { sessionID: sessionId, status: { type: 'busy' } } });
+
+  // If reasoning text is configured, stream it FIRST (like real models do)
+  if (reasoningText) {
+    const reasoningChunkSize = 8;
+    for (let i = 0; i < reasoningText.length; i += reasoningChunkSize) {
+      const chunk = reasoningText.slice(i, i + reasoningChunkSize);
+      sendSSE({
+        type: 'message.part.delta',
+        properties: {
+          sessionID: sessionId,
+          delta: chunk,
+          part: { sessionID: sessionId, messageID: msgId, type: 'reasoning' },
+        },
+      });
+      if (chunkDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, chunkDelayMs));
+      }
+    }
+    // Reasoning part updated (final)
+    sendSSE({
+      type: 'message.part.updated',
+      properties: {
+        sessionID: sessionId,
+        part: { sessionID: sessionId, messageID: msgId, type: 'reasoning' },
+      },
+    });
+  }
 
   // Stream text in small chunks
   const chunkSize = 8;
@@ -272,6 +300,8 @@ export function createMockOpenCode(config: MockOpenCodeConfig) {
     setResponse(text: string) { defaultResponse = text; },
     /** Make subsequent prompts fail with an error */
     setError(error: string | undefined) { errorResponse = error; },
+    /** Set reasoning text to prepend before the actual response (simulates thinking models) */
+    setReasoning(text: string | undefined) { reasoningText = text; },
     /** Get the number of sessions created */
     get sessionCount() { return sessionCounter; },
     /** Get the number of prompts sent */
