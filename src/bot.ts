@@ -327,10 +327,13 @@ export async function createChatInstance(deps: ChatInstanceDeps): Promise<Chat |
       contextInjectedSessions.add(sessionId);
       const sp = getSystemPrompt();
       if (sp) parts.push(sp);
-      // Compact one-time context block
+      // Compact one-time context block — instruct the agent to reply normally.
+      // The channel bot captures the agent's text output and delivers it to the
+      // platform automatically. The agent must NOT call /send for replies — that
+      // would cause duplicate messages.
       const sendTo = platformId || thread.id;
       parts.push(
-        `[Channel: ${adapterName} | ID: ${sendTo} | Reply: curl -s -X POST http://localhost:3456/send -d '{"platform":"${adapterName}","to":"${sendTo}","text":"..."}']`,
+        `[Channel: ${adapterName} | chat: ${sendTo} | IMPORTANT: Just respond with plain text. Your response is automatically delivered to the user. Do NOT use curl, /send, or any API to reply — that causes duplicate messages.]`,
       );
     }
 

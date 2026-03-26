@@ -27,8 +27,8 @@ import * as net from 'node:net';
 
 import { createMockOpenCode } from './mock-opencode.js';
 import { createMockSlack } from './mock-slack.js';
-import { createBot } from '../src/bot.js';
 import { createServer } from '../src/server.js';
+import { ChannelsService } from '../src/service.js';
 import { SessionManager } from '../src/sessions.js';
 import { OpenCodeClient } from '../src/opencode.js';
 import {
@@ -160,9 +160,10 @@ async function setup(): Promise<void> {
   process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
   process.env.SLACK_API_URL = `http://localhost:${slackPort}/api`;
 
-  // 4. Start the real bot pointing at mock OpenCode
-  const { bot } = createBot({ opencodeUrl: `http://localhost:${ocPort}` });
-  botServer = createServer(bot, { port: botPort });
+  // 4. Start the real bot (ChannelsService) pointing at mock OpenCode
+  const service = new ChannelsService({ opencodeUrl: `http://localhost:${ocPort}` });
+  await service.init();
+  botServer = createServer(service, { port: botPort });
   botUrl = `http://localhost:${botPort}`;
 
   // Wait for server to be ready
